@@ -498,6 +498,79 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 
 ---
 
+## 阶段 8：更长训练与基础对照实验（Stage H）
+
+### 阶段名称
+阶段 8 - 在通过工程验证的 projection_mode 分支上开展长一点训练与基础投影对照
+
+### 本轮目标
+- 不改 forward/backward 数学，不扩展验证器复杂度。
+- 重点转向训练稳定性与最基础的 perspective vs orthographic/isar 对照。
+
+### 修改文件清单
+- stage_h_projection_compare.py
+
+### 每个文件改了什么
+- stage_h_projection_compare.py
+  - 新增 Stage H 对照脚本：加载同一模型与同一相机，仅切换 `projection_mode` 为 `perspective` / `isar`。
+  - 输出 `render_perspective.png`、`render_isar.png`、`render_absdiff.png`、`gt.png` 与 `stats.json`。
+  - 输出统计包含：finite、min/max/mean/std、nonzero_ratio、near_white_ratio、L1/PSNR（相对 GT）。
+
+### 为什么这样改
+当前阶段目标是先确认“能稳定训练 + 能做最基础分支对照”，不再深挖梯度验证器，也不做模型功能扩展。
+
+### 训练计划与执行（orthographic/isar 递进）
+- 数据：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+- 模型路径：`./output/stage_h_ortho_prog`
+- 递进策略（从最小可承受版本开始）：
+  - Step 1：100 iter（从零开始）
+  - Step 2：500 iter（从 `chkpnt100.pth` 续跑）
+  - Step 3：1000 iter（从 `chkpnt500.pth` 续跑）
+- 训练日志：
+  - `output/stage_h_logs/train_100.log`
+  - `output/stage_h_logs/train_500.log`
+  - `output/stage_h_logs/train_1000.log`
+
+### 稳定性结果
+- NaN/Inf：未发现（训练日志与 post-check 均正常）。
+- Loss 行为：
+  - 100 iter 段 EMA Loss 约在 `0.128 ~ 0.141`。
+  - 500 iter 续跑段 EMA Loss 约在 `0.127 ~ 0.145`。
+  - 1000 iter 续跑段 EMA Loss 约在 `0.128 ~ 0.144`。
+- 训练评估点：
+  - ITER 100：`L1=0.104053`，`PSNR=12.2542`
+  - ITER 500：`L1=0.103231`，`PSNR=12.2519`
+  - ITER 1000：`L1=0.099753`，`PSNR=12.4792`
+- 训练后渲染体检（均 PASS，`finite_ok=True`）：
+  - ITER 100：`mean=0.993977`，`std=0.027641`，`near_white_ratio=0.904978`
+  - ITER 500：`mean=0.995100`，`std=0.024847`，`near_white_ratio=0.872791`
+  - ITER 1000：`mean=0.997583`，`std=0.015207`，`near_white_ratio=0.892622`
+  - 体检日志：`output/stage_h_logs/postcheck_100_500_1000.log`
+
+### 基础对照实验（同一 ISAR 数据，同一相机）
+- 对照方式：在同一已训练模型上，仅切换相机 `projection_mode`。
+- 对照输出目录：
+  - `output/stage_h_compare_100_train0`
+  - `output/stage_h_compare_1000_train0`
+- 每组均输出：`gt.png`、`render_perspective.png`、`render_isar.png`、`render_absdiff.png`、`stats.json`
+
+关键统计（camera=`img_0000.tif`）：
+- Iter 100
+  - perspective：`mean=0.999996`，`std=0.001382`，`near_white_ratio=0.999990`，`L1=0.891847`，`PSNR=0.6965`
+  - isar：`mean=0.993977`，`std=0.027641`，`near_white_ratio=0.904978`，`L1=0.886170`，`PSNR=0.7269`
+  - absdiff：`mean=0.006025`，`max=0.489182`
+- Iter 1000
+  - perspective：`mean=0.999999`，`std=0.000122`，`near_white_ratio=0.999966`，`L1=0.891845`，`PSNR=0.6965`
+  - isar：`mean=0.997583`，`std=0.015207`，`near_white_ratio=0.892622`，`L1=0.889462`，`PSNR=0.7094`
+  - absdiff：`mean=0.002417`，`max=0.342483`
+
+### 简单结论
+- 训练稳定性：通过。100/500/1000 递进训练均可完成，未见 NaN，渲染体检持续 PASS。
+- 基础投影对照：在同一模型同一相机下，perspective 渲染更趋近“近全白”，isar 分支保留了更多亮度结构变化；两者差异可由 `render_absdiff.png` 与 `stats.json` 直接复核。
+- 本轮定位：满足 Stage H 的“训练稳定性 + 基础对照结果”目标。
+
+---
+
 ## 当前总体状态
 - 阶段 0：完成。
 - 阶段 1：完成。
@@ -508,6 +581,7 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 阶段 6：完成（最小梯度数值对照验证通过）。
 - 阶段 7：完成（验证增强完成，orthographic 通过，perspective 多高斯待定位）。
 - 阶段 7.1：完成（perspective 多高斯不一致定位完成，确认先前误报源于验证脚本不一致）。
+- 阶段 8：完成（更长训练与基础对照实验完成）。
 
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：

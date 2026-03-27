@@ -321,6 +321,49 @@ $$
 
 ---
 
+## 13. 阶段 H：训练稳定性与基础投影对照记录
+
+本节只记录实验观察，不引入新的数学改动。
+
+### 13.1 递进训练计划与稳定性
+
+在同一 ISAR 数据集上执行递进训练：100 -> 500 -> 1000 iter。
+
+- 数据：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+- 模型：`./output/stage_h_ortho_prog`
+- 方式：
+  - 100 iter 从零开始。
+  - 500 iter 从 `chkpnt100.pth` 续跑。
+  - 1000 iter 从 `chkpnt500.pth` 续跑。
+
+结果摘要：
+- 三段训练均完成，无 NaN/Inf。
+- 训练评估点从 ITER 100 到 ITER 1000，L1 由 `0.104053` 下降到 `0.099753`，PSNR 由 `12.2542` 上升到 `12.4792`。
+- 训练后渲染健康检查（100/500/1000）均为 PASS，`finite_ok=True`。
+
+### 13.2 同模型同相机投影对照（perspective vs isar）
+
+在同一训练模型、同一相机下，仅切换 `projection_mode`：
+
+- `perspective`
+- `isar`
+
+并输出：`render_perspective.png`、`render_isar.png`、`render_absdiff.png`、`stats.json`。
+
+主要观察：
+- `perspective` 输出更接近近全白分布（`near_white_ratio` 约接近 1）。
+- `isar` 输出具有更明显的亮度结构变化（`std` 更高、`near_white_ratio` 更低）。
+- 在迭代 1000 时，两模式差异的均值绝对差约为 `0.0024`，最大差约为 `0.3425`。
+
+### 13.3 本节结论
+
+Stage H 结果支持以下工程判断：
+- 当前分支可在更长一点训练下稳定运行。
+- 在同一 ISAR 数据上，`perspective` 与 `orthographic/isar` 的渲染统计与图像分布存在稳定、可复核的差异。
+- 本轮目标聚焦“稳定性 + 基础对照”已达成，且未引入新的模型功能或数学变更。
+
+---
+
 ## 11. 当前文档结论（更新）
 
 - 阶段 D 后已具备“可运行的前向双投影数学”。
