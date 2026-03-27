@@ -370,6 +370,134 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 
 ---
 
+## 阶段 7：验证增强（Stage G）
+
+### 阶段名称
+阶段 7 - 边界样本扫描 + 多高斯梯度检查 + 20 iter 稳定性 smoke
+
+### 本轮目标
+- 不新增模型功能，仅增强验证覆盖。
+- 将 Stage F 的最小单高斯验证扩展到：
+  - clamp 边界附近样本扫描
+  - 多高斯小场景梯度检查
+  - 更长短训练 smoke（20 iter）
+
+### 修改文件清单
+- stage_g_validation.py
+- stage_g_posttrain_render_check.py
+
+### 每个文件改了什么
+- stage_g_validation.py
+  - 新增 orthographic clamp 边界扫描：重点覆盖 $|s_x x|\approx 1.3$ 与 $|s_y y|\approx 1.3$。
+  - 新增多高斯小场景梯度对照（2~4 高斯中的 3 高斯案例，含轻微重叠）。
+  - 同时对 perspective / orthographic 两分支输出 numeric vs analytic 梯度误差统计与 PASS/FAIL。
+- stage_g_posttrain_render_check.py
+  - 新增训练后渲染体检脚本：读取指定迭代模型并渲染一帧，检查 finite、黑白退化、统计量是否异常。
+
+### 为什么这样改
+在不修改数学实现的前提下，优先扩大验证样本复杂度，判断当前 projection_mode 分支在更接近真实场景时是否仍保持数值一致与训练稳定。
+
+### 仍然是临时/占位方案的地方
+- 多高斯 perspective 案例目前存在明显 numeric/analytic 偏差，尚未定位是非平滑数值效应还是梯度链问题。
+- 当前多高斯验证规模仍小，尚未覆盖更大遮挡组合。
+
+### 验证方式与结果
+- 1) clamp 边界扫描（orthographic）
+  - 命令：`python stage_g_validation.py`
+  - 子结果：PASS
+  - 摘要：`scan_points=12, max_abs_err=0.000e+00, max_rel_err=0.000e+00, clamp_zero_ok=True`
+
+- 2) 多高斯小场景梯度检查
+  - orthographic 子结果：PASS
+    - `checks=12, max_abs_err=1.713e+00, max_rel_err=2.642e-01, fails=0`
+  - perspective 子结果：FAIL
+    - `checks=12, max_abs_err=1.792e+01, max_rel_err=1.012e+00, fails=12`
+
+- 3) orthographic/isar 20 iter 训练 smoke
+  - 命令：
+    - `train.py --source_path D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest --images images --model_path D:/3DGS_new/gaussian-splatting/output/stage_g_ortho_smoke_20 --iterations 20`
+    - `python stage_g_posttrain_render_check.py --source_path D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest --images images --model_path D:/3DGS_new/gaussian-splatting/output/stage_g_ortho_smoke_20 --load_iteration 20`
+  - 子结果：PASS（无崩溃、无 NaN）
+  - 渲染统计：
+    - `finite_ok=True`
+    - `min=0.654040, max=1.000000, mean=0.996610, std=0.020717`
+    - `nonzero_ratio=1.000000, near_white_ratio=0.957237`
+
+### 本轮核心结论
+- 验证增强目标已完成。
+- orthographic 路径在边界扫描、多高斯检查和 20 iter smoke 下整体可运行且数值行为可接受。
+- perspective 多高斯梯度对照存在明显不一致，需在后续验证轮次单独定位。
+
+### 下一步建议
+- 下一轮继续保持“只验证不扩展”，专门对 perspective 多高斯不一致做分解定位：
+  - 固定排序与遮挡条件后做局部参数扫描
+  - 拆分 mean 路径与 cov 路径独立对照
+
+---
+
+## 阶段 7.1：perspective 多高斯不一致定位（仅验证分解）
+
+### 阶段名称
+阶段 7.1 - 只定位 perspective 多高斯梯度不一致来源
+
+### 本轮目标
+- 不改 forward/backward 数学，不加模型功能。
+- 判断不一致是由非平滑数值因素导致，还是解析梯度真实问题。
+
+### 修改文件清单
+- stage_g1_perspective_diagnose.py
+- stage_g_validation.py
+
+### 每个文件改了什么
+- stage_g1_perspective_diagnose.py
+  - 新增 Stage G.1 专用诊断脚本，执行以下顺序：
+    - 多高斯原失败风格案例
+    - 拉大间距减重叠
+    - 减小深度差
+    - 3 高斯降到 2 高斯
+    - 单高斯 perspective 对照
+  - 对每个分量执行 $\varepsilon$ sweep：
+    - $\varepsilon \in \{10^{-2}, 5\times10^{-3}, 10^{-3}, 5\times10^{-4}, 10^{-4}\}$
+  - 分量级统计：`mean_x`、`mean_y`、`cov_xx`、`cov_xy`、`cov_yy`。
+
+- stage_g_validation.py
+  - 修复验证脚本判据不一致：多高斯 case 中 numeric gradient 使用与 analytic 相同的 patch 大小（此前是 3 vs 5，不一致）。
+
+### 为什么这样改
+先保证验证脚本本身的对照条件一致，再判断是否为数学实现问题；否则会出现“验证器误报”。
+
+### 每组对照实验结果
+- S0 原失败风格（3 高斯，中等重叠+深度差）：全部 `ok`
+- S1 拉大间距（低重叠）：全部 `ok`
+- S2 深度差减小：全部 `ok`
+- S3 两高斯：全部 `ok`
+- S4 单高斯：全部 `ok`
+
+分量级统计（fail_ratio）：
+- `mean_x`: 0.000
+- `mean_y`: 0.000
+- `cov_xx`: 0.000
+- `cov_xy`: 0.000
+- `cov_yy`: 0.000
+
+全局判读：
+- `total=51, ok=51, likely_nonsmooth_numeric=0, suspicious_analytic=0`
+- `diagnosis=mostly_consistent`
+
+交叉验证（修复后重跑 Stage G 脚本）：
+- perspective 多高斯由 FAIL 变为 PASS：
+  - `max_abs_err=2.488e-03, max_rel_err=9.175e-03, fails=0`
+
+### 判断结论
+- 先前 perspective 多高斯“失败”主要来自验证脚本损失定义不一致（numeric/analytic 比较对象不一致），不是 forward/backward 数学证据。
+- 在一致判据下，perspective 分支的当前验证结果可恢复基本信心。
+
+### 是否足以恢复 perspective 分支信心
+- 结论：可以恢复“工程验证层面的基本信心”。
+- 说明：这不是理论完备证明，但在当前 Stage G.1 分解范围内未发现解析梯度异常证据。
+
+---
+
 ## 当前总体状态
 - 阶段 0：完成。
 - 阶段 1：完成。
@@ -378,6 +506,8 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 阶段 4：完成（forward 前向分支已启用，backward 未改）。
 - 阶段 5：完成（backward 最小投影梯度链与 forward 分支对齐）。
 - 阶段 6：完成（最小梯度数值对照验证通过）。
+- 阶段 7：完成（验证增强完成，orthographic 通过，perspective 多高斯待定位）。
+- 阶段 7.1：完成（perspective 多高斯不一致定位完成，确认先前误报源于验证脚本不一致）。
 
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：
