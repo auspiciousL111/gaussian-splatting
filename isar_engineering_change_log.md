@@ -320,6 +320,56 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 
 ---
 
+## 阶段 6：梯度数值对照验证（Stage F）
+
+### 阶段名称
+阶段 6 - projection_mode 分支的最小梯度数值一致性验证
+
+### 本轮目标
+- 仅做验证，不新增功能。
+- 仅验证投影直接相关梯度链：
+  - 2D mean 对 3D mean 梯度
+  - 协方差投影相关梯度
+  - orthographic 下 clamp 分段导数行为
+
+### 修改文件清单
+- stage_f_gradient_check.py
+
+### 每个文件改了什么
+- stage_f_gradient_check.py
+  - 新增独立验证脚本，直接调用 `GaussianRasterizer`，不进入训练主流程。
+  - 构建最小输入规模：1 个 Gaussian、9x9 图像、3x3 patch loss。
+  - 对比 analytic gradient（autograd/backward）与 numeric gradient（中心差分）。
+  - 覆盖 3 个最小案例：
+    - perspective_minimal
+    - orthographic_minimal
+    - orthographic_clamp_x（验证 clamp 分段导数）
+  - 输出每个指标的 analytic / numeric / abs_err / rel_err 以及 PASS/FAIL 总结。
+
+### 为什么这样改
+在 Stage E 后先做最小数值对照，可以在不扩大改动范围的情况下验证 forward/backward 分支一致性，降低后续阶段风险。
+
+### 仍然是临时/占位方案的地方
+- 当前是最小局部验证，不覆盖大规模场景、完整训练分布与多高斯相互遮挡。
+- orthographic_clamp 案例目前落在“完全平坦区”，可继续补一个接近阈值的边界案例做敏感性检查。
+
+### 验证方式与结果
+- 脚本执行命令：
+  - `python stage_f_gradient_check.py`
+- 结果：`[SUMMARY] stage_f gradient check = PASS`
+- 关键数值：
+  - perspective_minimal：max_abs_err=8.030e-04，max_rel_err=6.333e-03
+  - orthographic_minimal：max_abs_err=3.152e-04，max_rel_err=1.439e-04
+  - orthographic_clamp_x：各项梯度为 0，clamp x 分段导数检查通过
+
+### 本轮核心结论
+当前 `projection_mode` 下，最小投影相关梯度链在数值上与解析梯度基本一致，Stage F 验证目标达成。
+
+### 下一步建议
+保持“只验证不扩展”的策略，可在下一小轮仅新增 1~2 个阈值附近样本，检查 clamp 边界附近数值稳定性。
+
+---
+
 ## 当前总体状态
 - 阶段 0：完成。
 - 阶段 1：完成。
@@ -327,6 +377,7 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 阶段 3：完成（A+B+C 参数传递链完成）。
 - 阶段 4：完成（forward 前向分支已启用，backward 未改）。
 - 阶段 5：完成（backward 最小投影梯度链与 forward 分支对齐）。
+- 阶段 6：完成（最小梯度数值对照验证通过）。
 
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：

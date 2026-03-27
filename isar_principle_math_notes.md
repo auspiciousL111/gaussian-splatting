@@ -429,3 +429,72 @@ $$
 - forward 与 backward 已在 projection_mode 维度完成最小一致化。
 - 本轮只覆盖“投影直接相关梯度链”，符合小阶段目标。
 - 仍未完成全部 ISAR 数学细化（尺度物理标定、更多建模项），但已可作为下一 baseline 节点。
+
+---
+
+## 14. 阶段 F 最小梯度数值对照验证（本轮新增）
+
+本节只记录“验证方法与结果”，不引入新功能。
+
+### 14.1 对照原则
+
+对每个待验证参数分量，用中心差分近似数值梯度：
+
+$$
+g_{num}(\theta_i) = \frac{\mathcal{L}(\theta_i + \varepsilon) - \mathcal{L}(\theta_i - \varepsilon)}{2\varepsilon}
+$$
+
+并与解析梯度（autograd/backward）对比：
+
+$$
+\Delta_{abs} = |g_{ana} - g_{num}|,
+\quad
+\Delta_{rel} = \frac{|g_{ana} - g_{num}|}{\max(|g_{ana}|, |g_{num}|, 10^{-8})}
+$$
+
+### 14.2 最小验证配置
+
+- Gaussian 数量：1
+- 图像尺寸：$9\times 9$
+- 损失：中心 $3\times 3$ patch 像素和
+- 验证参数子集：
+  - 均值链：$\partial \mathcal{L} / \partial (x,y,z)$
+  - 协方差链：$\partial \mathcal{L} / \partial (\Sigma_{xx}, \Sigma_{xy}, \Sigma_{yy})$
+
+### 14.3 覆盖案例
+
+1. perspective_minimal
+- 用于验证透视分支下 mean/cov 投影链的一致性。
+
+2. orthographic_minimal
+- 用于验证正交分支下 mean/cov 投影链的一致性。
+
+3. orthographic_clamp_x
+- 设置 $x$ 落在 clamp 饱和区，验证分段导数行为（x 方向梯度应接近 0）。
+
+### 14.4 本轮结果
+
+- 总结：`PASS`
+- perspective_minimal：
+  - max_abs_err = $8.030\times 10^{-4}$
+  - max_rel_err = $6.333\times 10^{-3}$
+- orthographic_minimal：
+  - max_abs_err = $3.152\times 10^{-4}$
+  - max_rel_err = $1.439\times 10^{-4}$
+- orthographic_clamp_x：
+  - 解析梯度与数值梯度均为 0（在该构造样本下）
+  - clamp 分段导数行为与实现一致
+
+### 14.5 当前仍可疑/仍需继续观察的点
+
+- clamp 阈值附近（$|s_x x| \approx 1.3$）的数值平滑性尚未专门测。
+- 当前只验证单高斯与小视野，不包含多高斯重叠/遮挡导致的复杂梯度耦合。
+- 当前损失仅为局部像素和，尚未覆盖更复杂 loss 组合（如深度项混合权重变化）。
+
+---
+
+## 15. 阶段 F 后状态结论
+
+- 在不修改 forward/backward 数学的前提下，已完成最小梯度数值一致性验证。
+- 投影直接相关梯度链在当前最小案例中与解析梯度一致性良好。
+- 该结果可作为 Stage E baseline 之后进入下一验证轮次的依据。
