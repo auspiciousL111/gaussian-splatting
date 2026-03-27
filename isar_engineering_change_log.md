@@ -200,11 +200,65 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 
 ---
 
+## 阶段 4：forward 前向分支启用（仅前向）
+
+### 阶段名称
+阶段 4 - 在 forward.cu 启用 projection_mode 正交/ISAR 分支（不改 backward）
+
+### 本轮目标
+- 保持官方 perspective 路径完全不变。
+- 在 projection_mode 下新增 orthographic/isar 前向投影分支。
+- 仅改前向投影相关数学与前向中和投影直接相关的 2D 协方差映射。
+- 不改 backward.cu，不改训练损失逻辑。
+
+### 修改文件清单
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/forward.cu
+- smoke_test_isar_forward_only.py
+
+### 每个文件改了什么
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/forward.cu
+  - `computeCov2D(...)` 新增 `projection_mode` 分支。
+  - 保留官方透视公式为独立路径（代码内注释标明 unchanged）。
+  - 新增 orthographic/isar 路径：使用 `ortho_scale_x/ortho_scale_y` 进行线性缩放映射，并加入 `isar_window_size` 兜底。
+  - `preprocessCUDA(...)` 中 3D 点到 2D 的投影新增分支：
+    - perspective：继续使用齐次投影 + 透视除法（不改）。
+    - orthographic/isar：使用 view-space 线性映射到 NDC-like 平面。
+  - 在前向协方差调用处传入新参数。
+- smoke_test_isar_forward_only.py
+  - 新增 forward-only 冒烟脚本（仅渲染，不反向）。
+  - 输出有限性、最值、均值、标准差、非零像素比例，用于快速排查 NaN/全黑。
+
+### 为什么这样改
+阶段 C 已完成参数通路，阶段 4 的目标是最小开启前向分支，让“参数可传”升级为“前向已消费”，同时保持 backward 与训练目标不变，减少耦合风险。
+
+### 仍然是临时/占位方案的地方
+- backward 仍是透视梯度链，尚未适配正交分支。
+- ISAR reader 中 FoV 与随机点云仍为兼容期占位。
+- 正交分支当前优先保证稳定可运行，不代表最终物理标定已完成。
+
+### 验证方式与结果
+- 扩展重编译与重装：成功。
+- perspective 回归（2-iter train smoke）：成功完成，无回归崩溃。
+  - 命令：`train.py --source_path D:/3DGS_new/3DGS_DATA/train --iterations 2 --eval`
+- orthographic/isar forward-only smoke：PASS。
+  - 输出示例：`finite_ok=True`，`image_shape=(3,1200,1200)`，`nonzero_ratio=1.000000`，无 NaN/Inf/崩溃。
+
+### 本轮核心结论
+已在不触碰 backward 的前提下，成功启用并验证 forward 的 projection_mode 双分支：
+- perspective 路径保持可用且无回归。
+- orthographic/isar 前向分支可运行、输出稳定。
+
+### 下一步建议
+进入 backward 分支改造前，先做一个小规模可视化/统计对比（perspective vs orthographic）确认前向几何行为符合预期，再进入 backward 梯度链改造。
+
+---
+
 ## 当前总体状态
 - 阶段 0：完成。
 - 阶段 1：完成。
 - 阶段 2：完成（临时兼容补丁）。
-- 阶段 3：完成（A+B+C 参数传递链完成，数学尚未切换）。
+- 阶段 3：完成（A+B+C 参数传递链完成）。
+- 阶段 4：完成（forward 前向分支已启用，backward 未改）。
 
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：
@@ -212,3 +266,6 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 验证命令与结果。
 - 临时方案是否已替换。
 - 下一阶段依赖关系。
+
+
+

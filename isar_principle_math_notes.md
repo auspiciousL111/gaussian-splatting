@@ -46,6 +46,16 @@
 - backward 调用边界也已对齐接收新参数。
 - 仍未启用新的投影数学。
 
+### D 阶段（forward-only）打通内容
+- 在 `forward.cu` 中正式启用 `projection_mode` 分支。
+- perspective 前向公式保持官方路径不变。
+- orthographic/isar 前向路径开始消费：
+  - `projection_mode`
+  - `ortho_scale_x`
+  - `ortho_scale_y`
+  - `isar_window_size`（兜底）
+- backward 仍未改动。
+
 ---
 
 ## 3. 新增字段的物理意义
@@ -81,29 +91,27 @@
 - forward preprocess kernel 参数边界层。
 
 目前尚未影响的数值行为：
-- forward.cu 尚未基于 projection_mode 进入新投影公式分支。
 - backward.cu 尚未引入正交对应梯度分支。
 
 ---
 
-## 5. 为什么这一轮还没有真正启用 ISAR/正交投影
+## 5. 为什么目前仍不是“完整 ISAR/正交训练”
 
-这是有意的分阶段策略：
-- 先稳定接口，再改数学，避免问题定位耦合。
-- 如果接口和公式同时改，出错时很难快速定位到责任层。
-- 前向与反向需要分开验证，减少一次性风险。
+当前已启用 forward 分支，但尚未完成完整训练语义切换，原因是分阶段策略：
+- 已完成：前向分支启用与稳定性验证。
+- 未完成：backward 梯度链与正交分支一致化。
 
-因此当前仍保持：
-- 透视 FoV/tanfov 路径有效。
-- 透视 projection matrix 与透视除法有效。
-- 与此前 smoke 基线可对比。
+因此当前状态是：
+- 前向：支持 perspective 与 orthographic/isar 分支。
+- 反向：仍是透视假设。
+- 训练正确性：尚不能宣称完成 ISAR 正交训练闭环。
 
 ---
 
 ## 6. 下一轮进入 forward 数学前还需要注意什么
 
-1. 首次只改 forward，不改 backward。
-- 先验证渲染行为、形状一致性、数值稳定性。
+1. 进入 backward 前，先固定并冻结 forward 分支定义。
+- 避免 forward/backward 同时漂移导致梯度定位困难。
 
 2. 保留双路径可切换。
 - projection_mode 必须保留 perspective 回归路径。
@@ -114,7 +122,8 @@
 4. 继续使用最小验证闭环。
 - Scene 冒烟。
 - forward 渲染合理性检查。
-- 2-iteration 训练冒烟（保留必要临时兼容）。
+- perspective 下 2-iteration 回归冒烟。
+- orthographic/isar 下 forward-only 冒烟（有限性、非全黑、无崩溃）。
 
 5. 临时补丁保持可追踪。
 - train.py 中单通道扩 3 通道仅用于 smoke，不是最终建模结论。
@@ -126,18 +135,18 @@
 
 ---
 
-## 7. 阶段 C 后的可执行状态
+## 7. 阶段 D（forward-only）后的可执行状态
 
 已经就绪：
 - 新投影参数可从数据侧一路传到 CUDA 调用边界。
+- forward 中 projection_mode 分支已启用并通过冒烟验证。
 - 重编译与 smoke 流程已验证可执行。
 
 尚未完成：
-- forward.cu 中正交/ISAR 分支公式启用。
 - backward.cu 对应梯度链改造。
 
 建议的直接下一步：
-- 在 forward.cu 中引入 projection_mode 分支并消费 ortho 参数，完成前向验证后再进入 backward。
+- 进入 backward.cu：按已固定的 forward 分支补齐正交/ISAR 梯度链。
 
 ---
 
