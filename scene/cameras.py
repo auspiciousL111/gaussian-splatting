@@ -19,6 +19,7 @@ import cv2
 class Camera(nn.Module):
     def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap,
                  image_name, uid,
+                 projection_mode = "perspective", ortho_scale_x = 1.0, ortho_scale_y = 1.0, isar_window_size = 1.0,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
@@ -31,6 +32,10 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
+        self.projection_mode = projection_mode
+        self.ortho_scale_x = ortho_scale_x
+        self.ortho_scale_y = ortho_scale_y
+        self.isar_window_size = isar_window_size
 
         try:
             self.data_device = torch.device(data_device)
@@ -89,11 +94,29 @@ class Camera(nn.Module):
         self.camera_center = self.world_view_transform.inverse()[3, :3]
         
 class MiniCam:
-    def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):
+    def __init__(
+        self,
+        width,
+        height,
+        fovy,
+        fovx,
+        znear,
+        zfar,
+        world_view_transform,
+        full_proj_transform,
+        projection_mode = "perspective",
+        ortho_scale_x = 1.0,
+        ortho_scale_y = 1.0,
+        isar_window_size = 1.0,
+    ):
         self.image_width = width
         self.image_height = height    
         self.FoVy = fovy
         self.FoVx = fovx
+        self.projection_mode = projection_mode
+        self.ortho_scale_x = ortho_scale_x
+        self.ortho_scale_y = ortho_scale_y
+        self.isar_window_size = isar_window_size
         self.znear = znear
         self.zfar = zfar
         self.world_view_transform = world_view_transform

@@ -1,8 +1,33 @@
+# Python
+__pycache__/
 *.pyc
-.vscode
-output
-build
-diff_rasterization/diff_rast.egg-info
-diff_rasterization/dist
-tensorboard_3d
-screenshots
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+
+# Project outputs
+output/
+outputs/
+tensorboard_3d/
+screenshots/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Submodule build artifacts
+submodules/diff-gaussian-rasterization/build/
+submodules/diff-gaussian-rasterization/dist/
+submodules/diff-gaussian-rasterization/*.egg-info/
+submodules/simple-knn/build/
+submodules/simple-knn/dist/
+submodules/simple-knn/*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db

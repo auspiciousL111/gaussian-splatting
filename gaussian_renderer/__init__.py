@@ -15,6 +15,22 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
+
+PROJECTION_MODE_ENUM = {
+    "perspective": 0,
+    "orthographic": 1,
+    "isar": 1,
+}
+
+
+def _projection_mode_to_int(mode):
+    if isinstance(mode, str):
+        return PROJECTION_MODE_ENUM.get(mode.lower(), 0)
+    try:
+        return int(mode)
+    except (TypeError, ValueError):
+        return 0
+
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, separate_sh = False, override_color = None, use_trained_exp=False):
     """
     Render the scene. 
@@ -33,11 +49,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    raster_settings = GaussianRasterizationSettings(
+    raster_settings_kwargs = dict(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
         tanfovy=tanfovy,
+        projection_mode=_projection_mode_to_int(getattr(viewpoint_camera, "projection_mode", "perspective")),
+        ortho_scale_x=float(getattr(viewpoint_camera, "ortho_scale_x", 1.0)),
+        ortho_scale_y=float(getattr(viewpoint_camera, "ortho_scale_y", 1.0)),
+        isar_window_size=float(getattr(viewpoint_camera, "isar_window_size", 1.0)),
         bg=bg_color,
         scale_modifier=scaling_modifier,
         viewmatrix=viewpoint_camera.world_view_transform,
@@ -48,6 +68,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         debug=pipe.debug,
         antialiasing=pipe.antialiasing
     )
+    supported_fields = set(getattr(GaussianRasterizationSettings, "_fields", ()))
+    raster_settings = GaussianRasterizationSettings(**{k: v for k, v in raster_settings_kwargs.items() if k in supported_fields})
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 

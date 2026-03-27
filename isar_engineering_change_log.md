@@ -1,0 +1,214 @@
+﻿# ISAR-3DGS 工程变更记录
+
+## 文档用途
+本文档用于按阶段记录 ISAR 适配的真实工程改动与验证结果，便于科研笔记整理、复现实验与后续审计。
+
+## 维护约定
+每完成一个新阶段，按本文同样模板新增一节，并明确哪些是最终方案、哪些仍是临时占位。
+
+---
+
+## 阶段 0：RayISAR 多视角导出
+
+### 阶段名称
+阶段 0 - RayISAR 多视角数据导出
+
+### 本轮目标
+在 RayISAR 外部新增最小导出脚本，生成 3DGS 可直接读取的数据集边界：images + poses.csv。
+
+### 修改文件清单
+- 外部项目文件：D:/RayISAR_1.2/setup_isar_multiview.py
+
+### 每个文件改了什么
+- D:/RayISAR_1.2/setup_isar_multiview.py
+  - 新增 azimuth 扫描导出循环。
+  - 新增 All Reflections_Fr.tif 的逐帧导出/复制逻辑。
+  - 新增 poses.csv 写出逻辑。
+  - 新增默认数据集输出路径。
+  - 新增 LOS/角度转换与数据目录初始化辅助函数。
+
+### 为什么这样改
+原始 RayISAR 运行模式是单次单视角，不满足 3DGS 训练对多视角图像与每帧位姿元数据的输入要求。
+
+### 仍然是临时/占位方案的地方
+- 当前导出流程为最小可用实现，不是完整的批处理工程化框架。
+- LOS/up 约定固定为当前实验设定，后续可扩展为可配置策略。
+
+### 验证方式与结果
+- 验证导出目录结构正确（images + poses.csv）。
+- 验证图像命名符合 img_0000.tif、img_0001.tif 约定。
+- 验证 poses.csv 字段齐全且逐帧有值。
+
+### 本轮核心结论
+已具备可复用的 ISAR 多视角导出能力，成功建立 3DGS 数据接入的上游边界。
+
+### 下一步建议
+进入 3DGS 侧 reader 级接入，先不改 CUDA 数学。
+
+---
+
+## 阶段 1：3DGS 数据接入
+
+### 阶段名称
+阶段 1 - ISAR 数据读取与 Scene 路由接入
+
+### 本轮目标
+让 3DGS 能直接读取 ISAR 数据格式，并自动识别为 ISAR 数据集进入 Scene 构建。
+
+### 修改文件清单
+- scene/dataset_readers.py
+- scene/__init__.py
+- smoke_test_isar_scene.py
+
+### 每个文件改了什么
+- scene/dataset_readers.py
+  - 新增 ISAR poses.csv 解析逻辑。
+  - 新增 LOS/up/distance 到 R/T 的临时映射函数。
+  - 新增 readIsarSceneInfo 读取入口。
+  - 新增 sceneLoadTypeCallbacks 中 ISAR 回调注册。
+  - 新增按行构造 CameraInfo 的 ISAR 路径。
+- scene/__init__.py
+  - 新增自动识别规则：存在 poses.csv 且存在 images 目录则判定为 ISAR。
+  - 新增 ISAR 场景路由到 ISAR reader。
+- smoke_test_isar_scene.py
+  - 新增 Scene 构建冒烟脚本。
+  - 新增 camera list 路径命中检查与首帧信息打印。
+
+### 为什么这样改
+在修改投影数学之前，必须先把数据接入链路稳定下来，保证数据格式、位姿元数据和 Scene 构建可独立验证。
+
+### 仍然是临时/占位方案的地方
+- ISAR 路径中的 FoV 仍由 window_size 映射得到，仅用于兼容。
+- 点云初始化仍使用临时随机点云方案。
+- 当前几何语义是兼容态，不是最终 ISAR 投影定义。
+
+### 验证方式与结果
+- 执行 Scene 冒烟测试，结果 PASS。
+- 确认 train/test camera 列表构建路径被命中。
+- 确认 poses.csv + images 自动识别为 ISAR 数据集。
+
+### 本轮核心结论
+ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
+
+### 下一步建议
+执行短训练冒烟，先暴露通道与渲染链兼容问题，再进入 CUDA 侧工作。
+
+---
+
+## 阶段 2：单通道兼容训练 smoke
+
+### 阶段名称
+阶段 2 - 单通道 GT 临时兼容补丁（仅用于 smoke）
+
+### 本轮目标
+在 renderer 与损失仍偏 RGB 假设的前提下，让灰度 ISAR GT 可以完成 1-2 iter 训练冒烟。
+
+### 修改文件清单
+- train.py
+
+### 每个文件改了什么
+- train.py
+  - 在损失计算前新增临时逻辑：若 GT 形状为 1xHxW，则重复为 3xHxW。
+
+### 为什么这样改
+当前渲染和损失链条多个位置默认按 RGB 张量工作。为了先跑通最小训练验证，需要一个最小适配补丁。
+
+### 仍然是临时/占位方案的地方
+- 该补丁仅用于短程 smoke 验证。
+- 不代表最终 ISAR 建模应采用三通道。
+
+### 验证方式与结果
+- 执行 2-iteration 训练冒烟，训练流程正常结束。
+
+### 本轮核心结论
+在不改投影数学的前提下，训练主循环已可用于快速回归验证。
+
+### 下一步建议
+进入参数建模与传递链打通（A+B+C），为 forward 数学切换做接口准备。
+
+---
+
+## 阶段 3：A+B+C 参数建模与传递链打通
+
+### 阶段名称
+阶段 3 - 相机参数建模 + Python 到 C++/CUDA 正式透传
+
+### 本轮目标
+- A+B：在 Camera/Reader/Renderer 层建立新参数字段并可打包。
+- C：将参数正式透传到扩展 binding 与 CUDA 调用边界。
+- 明确要求：不改 forward.cu 投影公式，不改 backward.cu。
+
+### 修改文件清单
+- scene/dataset_readers.py
+- utils/camera_utils.py
+- scene/cameras.py
+- gaussian_renderer/__init__.py
+- submodules/diff-gaussian-rasterization/diff_gaussian_rasterization/__init__.py
+- submodules/diff-gaussian-rasterization/rasterize_points.h
+- submodules/diff-gaussian-rasterization/rasterize_points.cu
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer.h
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.cu
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/forward.h
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/forward.cu
+
+### 每个文件改了什么
+- scene/dataset_readers.py
+  - CameraInfo 新增字段：projection_mode、ortho_scale_x、ortho_scale_y、isar_window_size。
+  - ISAR reader 填充上述字段。
+- utils/camera_utils.py
+  - 新字段最小透传到 Camera 构造（含默认兜底）。
+- scene/cameras.py
+  - Camera 与 MiniCam 新增字段与成员存储。
+- gaussian_renderer/__init__.py
+  - projection_mode 改为整数枚举映射后打包。
+  - 新字段加入 raster settings 打包。
+  - 保留兼容过滤逻辑，避免环境不一致导致运行中断。
+- diff_gaussian_rasterization/__init__.py
+  - GaussianRasterizationSettings 扩展新字段。
+  - forward/backward 参数打包加入四个新字段。
+  - projection_mode 类型改为 int。
+- rasterize_points.h / rasterize_points.cu
+  - 扩展 C++ 前后向入口函数签名。
+  - 将新参数转发到 Rasterizer 前后向接口。
+- rasterizer.h / rasterizer_impl.cu
+  - 扩展 Rasterizer 前后向签名。
+  - forward 路径将参数传到 FORWARD::preprocess 边界。
+  - backward 路径先接收参数但不使用。
+- forward.h / forward.cu
+  - 扩展 preprocess 与 kernel 边界签名。
+  - 仅新增参数占位，不改投影公式。
+
+### 为什么这样改
+先把接口链路打通，能把后续数学改动隔离为独立提交，显著降低调试耦合与回归风险。
+
+### 仍然是临时/占位方案的地方
+- projection_mode 已透传但尚未驱动 forward.cu 分支数学。
+- backward.cu 仍保持原状。
+- FoV 兼容路径仍然有效。
+- renderer 兼容过滤仍存在（用于环境混合期）。
+
+### 验证方式与结果
+- 扩展重编译并重装成功（清理构建缓存后全量编译通过）。
+- Scene 冒烟测试 PASS。
+- 2-iteration 训练冒烟测试完成。
+
+### 本轮核心结论
+新相机参数已正式传到 CUDA 调用边界，且在不改变现有数值行为的前提下通过了完整冒烟回归。
+
+### 下一步建议
+下一阶段仅进入 forward 数学改造：基于 projection_mode 与 ortho 参数引入正交分支，先不改 backward.cu。
+
+---
+
+## 当前总体状态
+- 阶段 0：完成。
+- 阶段 1：完成。
+- 阶段 2：完成（临时兼容补丁）。
+- 阶段 3：完成（A+B+C 参数传递链完成，数学尚未切换）。
+
+## 后续更新提醒
+后续每个阶段都需要同步更新本文件，且必须包含：
+- 实际改动文件与函数边界。
+- 验证命令与结果。
+- 临时方案是否已替换。
+- 下一阶段依赖关系。

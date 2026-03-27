@@ -11,6 +11,7 @@
 
 import os
 import sys
+import csv
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -36,6 +37,10 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
+    projection_mode: str = "perspective"
+    ortho_scale_x: float = 1.0
+    ortho_scale_y: float = 1.0
+    isar_window_size: float = 1.0
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -309,7 +314,173 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
+
+def _isar_read_pose_rows(csv_path):
+    required = [
+        "image_name",
+        "azimuth_deg",
+        "elevation_deg",
+        "distance_m",
+        "los_x",
+        "los_y",
+        "los_z",
+        "up_x",
+        "up_y",
+        "up_z",
+        "window_size",
+    ]
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"Empty poses csv: {csv_path}")
+        missing = [k for k in required if k not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"poses.csv missing required fields: {missing}")
+        rows = list(reader)
+    if not rows:
+        raise ValueError(f"poses.csv has no rows: {csv_path}")
+    return rows
+
+
+def _isar_rt_from_los_up_distance(los_vec, up_vec, distance_m):
+    # Temporary compatibility pose mapping for stage-1 data ingestion only.
+    # This does NOT represent the final ISAR geometry used in rendering kernels.
+    los = np.asarray(los_vec, dtype=np.float32)
+    up_raw = np.asarray(up_vec, dtype=np.float32)
+
+    los_n = np.linalg.norm(los)
+    if los_n < 1e-8:
+        raise ValueError("Invalid LOS vector norm < 1e-8")
+    forward = los / los_n
+
+    right = np.cross(forward, up_raw)
+    right_n = np.linalg.norm(right)
+    if right_n < 1e-8:
+        # Fallback if up and LOS are nearly parallel.
+        up_raw = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        right = np.cross(forward, up_raw)
+        right_n = np.linalg.norm(right)
+        if right_n < 1e-8:
+            up_raw = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            right = np.cross(forward, up_raw)
+            right_n = np.linalg.norm(right)
+    right = right / max(right_n, 1e-8)
+
+    up = np.cross(right, forward)
+    up = up / max(np.linalg.norm(up), 1e-8)
+
+    location = -forward * float(distance_m)
+
+    c2w = np.eye(4, dtype=np.float32)
+    c2w[:3, 0] = right
+    c2w[:3, 1] = up
+    c2w[:3, 2] = forward
+    c2w[:3, 3] = location
+
+    w2c = np.linalg.inv(c2w)
+    R = np.transpose(w2c[:3, :3])
+    T = w2c[:3, 3]
+    return R, T
+
+
+def readIsarSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+    images_dir = os.path.join(path, "images" if images is None else images)
+    poses_csv = os.path.join(path, "poses.csv")
+
+    if not os.path.exists(images_dir):
+        raise FileNotFoundError(f"ISAR images directory not found: {images_dir}")
+    if not os.path.exists(poses_csv):
+        raise FileNotFoundError(f"ISAR poses.csv not found: {poses_csv}")
+
+    rows = _isar_read_pose_rows(poses_csv)
+
+    cam_infos = []
+    for idx, row in enumerate(rows):
+        image_name = row["image_name"]
+        image_path = os.path.join(images_dir, image_name)
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"ISAR image listed in poses.csv not found: {image_path}")
+
+        with Image.open(image_path) as img:
+            width, height = img.size
+
+        azimuth = float(row["azimuth_deg"])
+        elevation = float(row["elevation_deg"])
+        distance = float(row["distance_m"])
+        los = [float(row["los_x"]), float(row["los_y"]), float(row["los_z"])]
+        up = [float(row["up_x"]), float(row["up_y"]), float(row["up_z"])]
+        window_size = float(row["window_size"])
+
+        print(
+            f"[ISAR] {image_name} | az={azimuth:.6f} el={elevation:.6f} dist={distance:.6f} "
+            f"| los=({los[0]:.6f},{los[1]:.6f},{los[2]:.6f}) "
+            f"| up=({up[0]:.6f},{up[1]:.6f},{up[2]:.6f})"
+        )
+
+        # Temporary FoV placeholder for compatibility with existing Camera path.
+        # Real ISAR projection will be handled in later stages.
+        focal_placeholder = max(window_size, 1e-3)
+        FovX = focal2fov(focal_placeholder, width)
+        FovY = focal2fov(focal_placeholder, height)
+
+        R, T = _isar_rt_from_los_up_distance(los, up, distance)
+
+        cam_infos.append(
+            CameraInfo(
+                uid=idx,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                depth_params=None,
+                image_path=image_path,
+                image_name=image_name,
+                depth_path="",
+                width=width,
+                height=height,
+                is_test=(idx % llffhold == 0) if eval else False,
+                projection_mode="orthographic",
+                ortho_scale_x=window_size,
+                ortho_scale_y=window_size,
+                isar_window_size=window_size,
+            )
+        )
+
+    cam_infos = sorted(cam_infos, key=lambda x: x.image_name)
+    train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
+    test_cam_infos = [c for c in cam_infos if c.is_test]
+
+    if not train_cam_infos:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    if nerf_normalization["radius"] <= 1e-8:
+        nerf_normalization["radius"] = 1.0
+
+    # Temporary random point cloud placeholder for stage-1 ingestion only.
+    num_pts = 50_000
+    xyz = np.random.random((num_pts, 3)).astype(np.float32) * 2.0 - 1.0
+    shs = np.random.random((num_pts, 3)).astype(np.float32) / 255.0
+    rgb = SH2RGB(shs)
+    pcd = BasicPointCloud(points=xyz, colors=rgb, normals=np.zeros((num_pts, 3), dtype=np.float32))
+
+    ply_path = os.path.join(path, "isar_points3d_placeholder.ply")
+    if not os.path.exists(ply_path):
+        storePly(ply_path, xyz, (rgb * 255).astype(np.uint8))
+
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        is_nerf_synthetic=False,
+    )
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "ISAR": readIsarSceneInfo,
 }

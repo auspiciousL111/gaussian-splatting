@@ -117,6 +117,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
+        # Temporary smoke-test compatibility patch:
+        # If ISAR GT is single-channel (1xHxW), expand to 3xHxW so that
+        # current RGB-oriented loss/render path can run for short validation.
+        # This does not mean final ISAR training should be modeled as 3-channel.
+        if gt_image.dim() == 3 and gt_image.shape[0] == 1:
+            gt_image = gt_image.repeat(3, 1, 1)
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
