@@ -253,12 +253,80 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 
 ---
 
+## 阶段 5：backward 分支对齐（最小梯度链）
+
+### 阶段名称
+阶段 5 - 在 backward.cu 补齐 projection_mode 对应的最小梯度链
+
+### 本轮目标
+- 只改 backward 相关代码。
+- 保持 forward.cu 数学不变。
+- 在 backward 中补齐与当前 forward 双分支严格对应的最小梯度链：
+  - 2D 协方差路径（computeCov2DCUDA）
+  - 2D 均值路径（preprocessCUDA）
+
+### 修改文件清单
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.h
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.cu
+
+### 每个文件改了什么
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.h
+  - `BACKWARD::preprocess(...)` 新增参数：
+    - `projection_mode`
+    - `ortho_scale_x`
+    - `ortho_scale_y`
+    - `isar_window_size`
+
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu
+  - `computeCov2DCUDA(...)` 新增 projection_mode 分支：
+    - perspective 分支保留原梯度链。
+    - orthographic/isar 分支使用与 forward 一致的常数 Jacobian（由 `ortho_scale_x/y` 或 `isar_window_size` 兜底计算）。
+  - 在 covariance 路径中明确：
+    - orthographic 下协方差对均值不显式依赖，故该路径对均值的几何梯度为 0。
+    - inverse-depth 梯度项保持两分支共享（`invdepth = 1 / z`）。
+  - `preprocessCUDA(...)` 新增 projection_mode 分支：
+    - perspective：沿用原投影反传公式。
+    - orthographic/isar：按 `x_ndc = clamp(scale_x * x_view)`、`y_ndc = clamp(scale_y * y_view)` 反传到 view，再由 view 反传到 world。
+  - `BACKWARD::preprocess(...)` 透传新增参数给上述两个 kernel。
+
+- submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.cu
+  - 删除 backward 中对 `projection_mode / ortho_scale_x / ortho_scale_y / isar_window_size` 的 `(void)` 占位。
+  - 在调用 `BACKWARD::preprocess(...)` 时转发这些参数。
+
+### 为什么这样改
+阶段 4 已启用 forward 双分支；若 backward 继续固定透视链，会造成前后向不一致。阶段 5 只补最小投影梯度链，保证最小可训练闭环，避免一次性扩大改动面。
+
+### 仍然是临时/占位方案的地方
+- orthographic 尺度仍使用当前定义（含 `isar_window_size` 兜底），尚未做物理标定精化。
+- 仅补齐“投影直接相关”梯度链，未扩展到更大范围的 ISAR 建模优化。
+
+### 验证方式与结果
+- 扩展重编译与重装：成功。
+  - 命令：`pip install -e submodules/diff-gaussian-rasterization --no-build-isolation`
+- perspective 回归 smoke（2-iter）：成功。
+  - 命令：`train.py --source_path D:/3DGS_new/3DGS_DATA/train --iterations 2 --eval`
+- isar/orthographic 最小 backward smoke（2-iter 短训练）：成功。
+  - 命令：`train.py --source_path D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest --images images --iterations 2`
+
+### 本轮核心结论
+已完成 backward 与当前 forward 分支的一致化最小闭环：
+- perspective 训练回归不退化。
+- orthographic/isar 可执行最小反向训练路径。
+
+### 下一步建议
+以本节点作为 baseline 后，可进入下一小阶段：
+- 在固定当前分支定义的前提下，增加分支间数值对照与梯度统计，逐步替换占位尺度策略。
+
+---
+
 ## 当前总体状态
 - 阶段 0：完成。
 - 阶段 1：完成。
 - 阶段 2：完成（临时兼容补丁）。
 - 阶段 3：完成（A+B+C 参数传递链完成）。
 - 阶段 4：完成（forward 前向分支已启用，backward 未改）。
+- 阶段 5：完成（backward 最小投影梯度链与 forward 分支对齐）。
 
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：

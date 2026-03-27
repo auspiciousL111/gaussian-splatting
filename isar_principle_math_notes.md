@@ -1,7 +1,7 @@
 ﻿# ISAR-3DGS 原理与数学记录
 
 ## 文档用途
-本文档用于记录当前几何假设、参数物理意义、参数通路边界，以及进入 forward 数学前的关键注意事项。
+本文档用于记录当前几何假设、参数物理意义、参数通路边界、数学原理和公式记录与推导。
 
 ## 维护约定
 每次涉及几何接口或投影数学变更，都应先更新本文件，再执行实验验证。
@@ -158,3 +158,274 @@
 - 参数通路从“可到达”变为“已消费”的边界位置。
 - 哪些临时方案被替换。
 - 做了哪些验证、验证证明了什么。
+
+---
+
+## 9. 阶段 D 已启用的前向数学公式（本轮补充）
+
+本节给出当前代码已经对应到的前向公式，方便后续 backward 对齐。
+
+### 9.1 坐标变换
+
+世界坐标到相机坐标：
+
+$$
+\mathbf{X}_c = \mathbf{R}\mathbf{X}_w + \mathbf{t},\quad
+\mathbf{X}_c = (x, y, z)^\top
+$$
+
+其中：
+- $\mathbf{R}$ 为旋转矩阵。
+- $\mathbf{t}$ 为平移向量。
+
+### 9.2 两种投影模型
+
+1. perspective（projection_mode = 0，保持官方路径）
+
+$$
+u = f_x \frac{x}{z} + c_x,\quad
+v = f_y \frac{y}{z} + c_y
+$$
+
+对应局部 Jacobian：
+
+$$
+\mathbf{J}_{\text{persp}} =
+\begin{bmatrix}
+\frac{f_x}{z} & 0 & -\frac{f_x x}{z^2} \\
+0 & \frac{f_y}{z} & -\frac{f_y y}{z^2}
+\end{bmatrix}
+$$
+
+2. orthographic/isar（projection_mode = 1，阶段 D 新启用）
+
+定义线性尺度（含防零夹紧思想）：
+
+$$
+s_x \approx \frac{2}{\max(|\text{ortho\_scale\_x}|, \varepsilon)},\quad
+s_y \approx \frac{2}{\max(|\text{ortho\_scale\_y}|, \varepsilon)}
+$$
+
+若缺少正交尺度，可用 `isar_window_size` 进行兜底近似。
+
+正交投影可写为：
+
+$$
+u = s_x x + c_x,\quad
+v = s_y y + c_y
+$$
+
+对应 Jacobian：
+
+$$
+\mathbf{J}_{\text{ortho}} =
+\begin{bmatrix}
+s_x & 0 & 0 \\
+0 & s_y & 0
+\end{bmatrix}
+$$
+
+### 9.3 3D 高斯到 2D 椭圆协方差
+
+设 3D 协方差为 $\mathbf{\Sigma}_{3D}$，则屏幕平面协方差统一写法：
+
+$$
+\mathbf{\Sigma}_{2D} = \mathbf{J}\,\mathbf{\Sigma}_{3D}\,\mathbf{J}^\top + \lambda \mathbf{I}
+$$
+
+其中：
+- perspective 分支取 $\mathbf{J}=\mathbf{J}_{\text{persp}}$。
+- orthographic 分支取 $\mathbf{J}=\mathbf{J}_{\text{ortho}}$。
+- $\lambda \mathbf{I}$ 表示数值稳定所需的小对角正则项。
+
+### 9.4 前向渲染与 alpha 合成
+
+2D 高斯权重（省略归一化常数）可写为：
+
+$$
+w_i(\mathbf{p}) = \exp\left(-\frac{1}{2}(\mathbf{p}-\boldsymbol{\mu}_i)^\top
+\mathbf{\Sigma}_{2D,i}^{-1}(\mathbf{p}-\boldsymbol{\mu}_i)\right)
+$$
+
+像素颜色按前向深度序进行 alpha 累积：
+
+$$
+\mathbf{C} = \sum_i T_i\,\alpha_i\,\mathbf{c}_i,\quad
+T_i = \prod_{j<i}(1-\alpha_j)
+$$
+
+---
+
+## 10. 下一阶段 backward 需要对齐的数学框架
+
+当前状态：forward 已支持双分支，backward 仍是透视假设。
+
+下一阶段需按链式法则补齐正交分支梯度。
+
+### 10.1 均值路径梯度链
+
+以单个高斯中心为例：
+
+$$
+\frac{\partial \mathcal{L}}{\partial \mathbf{X}_w}
+=
+\frac{\partial \mathcal{L}}{\partial \boldsymbol{\mu}_{2D}}
+\frac{\partial \boldsymbol{\mu}_{2D}}{\partial \mathbf{X}_c}
+\frac{\partial \mathbf{X}_c}{\partial \mathbf{X}_w}
+$$
+
+其中：
+
+$$
+\frac{\partial \mathbf{X}_c}{\partial \mathbf{X}_w}=\mathbf{R}
+$$
+
+并且：
+- perspective 分支：$\frac{\partial \boldsymbol{\mu}_{2D}}{\partial \mathbf{X}_c}=\mathbf{J}_{\text{persp}}$。
+- orthographic 分支：$\frac{\partial \boldsymbol{\mu}_{2D}}{\partial \mathbf{X}_c}=\mathbf{J}_{\text{ortho}}$。
+
+### 10.2 协方差路径梯度链
+
+由
+
+$$
+\mathbf{\Sigma}_{2D} = \mathbf{J}\,\mathbf{\Sigma}_{3D}\,\mathbf{J}^\top
+$$
+
+可得关键链路：
+
+$$
+\frac{\partial \mathcal{L}}{\partial \mathbf{\Sigma}_{3D}},\quad
+\frac{\partial \mathcal{L}}{\partial \mathbf{J}}
+$$
+
+当投影分支不同，$\mathbf{J}$ 的表达不同，需在 backward 中使用与 forward 同一分支的 Jacobian 定义，避免梯度与前向不一致。
+
+### 10.3 参数梯度
+
+对于 orthographic 分支，后续若允许学习或优化尺度，需要明确：
+
+$$
+\frac{\partial \mathcal{L}}{\partial s_x},\quad
+\frac{\partial \mathcal{L}}{\partial s_y}
+$$
+
+若继续使用
+
+$$
+s_x = \frac{2}{|\text{ortho\_scale\_x}|},\quad
+s_y = \frac{2}{|\text{ortho\_scale\_y}|}
+$$
+
+则还会引入绝对值与夹紧点的分段导数，需要在实现上处理不可导点的次梯度或平滑替代。
+
+---
+
+## 11. 当前文档结论（更新）
+
+- 阶段 D 后已具备“可运行的前向双投影数学”。
+- 现阶段缺口已明确为“反向链与分支 Jacobian 对齐”。
+- 后续任何 backward 改动都应以第 9 节公式为前向真值来源进行一致化实现与验证。
+
+---
+
+## 12. 阶段 E 已完成的 backward 对齐数学（本轮新增）
+
+本节记录“已经实现到代码”的最小 backward 对齐，不是最终 ISAR 全量数学。
+
+### 12.1 均值梯度（2D mean 路径）
+
+1. perspective 分支（保持原链路）
+
+$$
+\mathbf{m}_{clip} = \mathbf{P}[\mathbf{X}_w, 1]^\top,\quad
+\mathbf{m}_{ndc} = \left(\frac{m_x}{m_w}, \frac{m_y}{m_w}\right)
+$$
+
+反向时使用透视除法链式求导，当前实现与原始 3DGS 一致。
+
+2. orthographic/isar 分支（本轮补齐）
+
+$$
+\mathbf{X}_c = \mathbf{R}\mathbf{X}_w + \mathbf{t}
+$$
+
+$$
+x_{ndc} = \operatorname{clamp}(s_x x_c),\quad
+y_{ndc} = \operatorname{clamp}(s_y y_c)
+$$
+
+其中
+
+$$
+s_x = \frac{2}{\max(|\text{ortho\_scale\_x}|, \varepsilon)},\quad
+s_y = \frac{2}{\max(|\text{ortho\_scale\_y}|, \varepsilon)}
+$$
+
+反向采用分段导数：
+
+$$
+\frac{\partial x_{ndc}}{\partial x_c} =
+\begin{cases}
+s_x, & |s_x x_c| \le 1.3 \\
+0, & \text{otherwise}
+\end{cases},\quad
+\frac{\partial y_{ndc}}{\partial y_c} =
+\begin{cases}
+s_y, & |s_y y_c| \le 1.3 \\
+0, & \text{otherwise}
+\end{cases}
+$$
+
+再由
+
+$$
+\frac{\partial \mathbf{X}_c}{\partial \mathbf{X}_w} = \mathbf{R}
+$$
+
+把梯度从 view 坐标传回 world 坐标。
+
+### 12.2 协方差梯度（2D conic/cov 路径）
+
+前向统一形式：
+
+$$
+\mathbf{\Sigma}_{2D} = \mathbf{J}\mathbf{\Sigma}_{3D}\mathbf{J}^\top
+$$
+
+反向仍按
+
+$$
+\frac{\partial \mathcal{L}}{\partial \mathbf{\Sigma}_{3D}},\quad
+\frac{\partial \mathcal{L}}{\partial \mathbf{J}}
+$$
+
+进行链式传播。
+
+- perspective：$\mathbf{J}_{\text{persp}}$ 随 $(x_c,y_c,z_c)$ 变化，因此协方差路径对均值有几何梯度贡献。
+- orthographic：$\mathbf{J}_{\text{ortho}}$ 为常数矩阵（由尺度给定），因此该路径对均值的几何梯度为 0（不含深度项）。
+
+### 12.3 inverse-depth 项（两分支共享）
+
+当前渲染中 inverse-depth 仍按
+
+$$
+d = \frac{1}{z_c}
+$$
+
+因此梯度项保持：
+
+$$
+\frac{\partial \mathcal{L}}{\partial z_c}
+\mathrel{+}= -\frac{\partial \mathcal{L}}{\partial d}\frac{1}{z_c^2}
+$$
+
+该项在 perspective 与 orthographic 分支中都保留。
+
+---
+
+## 13. 阶段 E 后的状态结论
+
+- forward 与 backward 已在 projection_mode 维度完成最小一致化。
+- 本轮只覆盖“投影直接相关梯度链”，符合小阶段目标。
+- 仍未完成全部 ISAR 数学细化（尺度物理标定、更多建模项），但已可作为下一 baseline 节点。
