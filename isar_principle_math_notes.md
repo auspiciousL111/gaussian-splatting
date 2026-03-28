@@ -518,6 +518,45 @@ $$
 ### 14.4 本轮结果
 
 - 总结：`PASS`
+
+---
+
+## 15. 阶段 P2：最小监督修正（单通道强度语义）
+
+本节只涉及训练监督入口，不涉及 forward/backward 数学改动。
+
+### 15.1 当前最小实现
+
+当满足以下条件时：
+- 数据集识别为 ISAR（`poses.csv + images`）
+- GT 为单通道 `1xHxW`
+
+训练损失入口改为单通道分支：
+
+$$
+I_{gray} = \frac{1}{3}(I_R + I_G + I_B)
+$$
+
+并使用：
+
+$$
+\mathcal{L} = (1-\lambda)\,\|I_{gray}-I_{gt}\|_1 + \lambda\,(1-\mathrm{SSIM}(I_{gray}, I_{gt}))
+$$
+
+其中 $I_{gt}$ 为 `1xHxW` GT 强度图。
+
+### 15.2 为什么选“通道均值”作为 render_gray
+
+- 最小侵入：不改 renderer 表示，不新增网络头。
+- 对称中性：当前三通道并无真实颜色语义，均值避免偏向某单一通道。
+- 可回退：非 ISAR 或非 1ch GT 时仍走原 RGB 兼容路径，降低回归风险。
+
+### 15.3 本阶段效果判断
+
+在 2-iter 与 100-iter 验证中，训练稳定性正常；
+但 100-iter 与旧监督同迭代基线相比，`l1_vs_gt`、`psnr_vs_gt`、强度分位数几乎不变。
+
+工程结论：P2 完成了“监督语义对齐入口”，但单独这一改动尚不足以显著改善当前“能量偏低、结构偏弱”现象。
 - perspective_minimal：
   - max_abs_err = $8.030\times 10^{-4}$
   - max_rel_err = $6.333\times 10^{-3}$
@@ -668,3 +707,147 @@ $$
 - 解析梯度真实问题：本轮未观察到直接证据。
 
 在当前 Stage G.1 范围内，perspective 分支可恢复工程验证层面的基本信心。
+
+---
+
+## 19. 阶段 P2 长训练复核（500/1000）
+
+本节只记录监督入口修正（P2）在更长训练下的实证结果，不涉及 forward/backward 数学改动。
+
+### 19.1 固定评估口径
+
+- 同一数据路径：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+- 同一相机：`camera_index=0`
+- 同一背景：ISAR 黑底约定
+- 主判据：`modes_intensity.isar`
+
+### 19.2 单通道主指标结果
+
+iter 500（P2 vs baseline）：
+- `l1` 基本持平（微弱改善）
+- `psnr` 基本持平（微弱下降）
+- `q95/q99/contrast` 小幅下降
+
+iter 1000（P2 vs baseline）：
+- `l1` 下降（更好）
+- `psnr` 上升（更好）
+- `q95/q99` 上升
+- `contrast=q99-q50` 上升
+
+可见，P2 的收益在 1000 iter 才开始显现，且主要体现在高分位能量与对比度。
+
+### 19.3 视觉复核结论
+
+- 500 iter：P2 与 baseline 的主结构几乎无可感差异。
+- 1000 iter：P2 相比 baseline 出现更活跃亮散射与更强局部对比。
+- 但整体仍偏稀疏散点形态，与 GT 的结构分布差距仍明显。
+
+### 19.4 阶段判定
+
+- P2 不是无效改动：在更长训练下有可测提升。
+- 但该提升尚不足以跨越“结构恢复”门槛。
+- 下一步建议进入 P2.1（仅监督/loss 侧增强），继续保持“不改 forward/backward 数学”的约束。
+
+---
+
+## 20. 阶段 P2.1 监督侧结论（A/B 最小轮次）
+
+本节只记录监督入口实验结论，不涉及 forward/backward 数学改动。
+
+### 20.1 候选 A 小调参结论
+
+候选 A 形式保持不变：
+
+$$
+w = 1 + \alpha I_{gt}^{\gamma},\quad
+L_{wL1}=\frac{\sum w|I_{pred}-I_{gt}|}{\sum w}
+$$
+
+在已测组合中，`alpha=1.0, gamma=2.0` 在“高分位增强”与“全局 L1 恶化”之间取得最好平衡；
+因此当前监督最优版本固定为 `P2.1A(alpha=1.0, gamma=2.0)`。
+
+### 20.2 候选 B 最小验证结论
+
+候选 B 形式：
+
+$$
+L = \lambda_1 |I_{pred}-I_{gt}| + \lambda_2 \left|\log(1+\beta I_{pred})-\log(1+\beta I_{gt})\right|
+$$
+
+最小接入默认参数：`lambda1=1.0, lambda2=0.2, beta=10.0`。
+
+结论：
+- 2-iter smoke 通过，说明候选 B 入口可执行。
+- 100 iter 与 P2、P2.1A(a=1.0,g=2.0) 同口径对照中，候选 B 未显示明确优势。
+- 因此不继续推进候选 B 的 500/1000，也不扩更多 loss 变体。
+
+### 20.3 阶段切换
+
+在当前节点，监督侧扩展暂时冻结；下一阶段切换为 CUDA 数学公式审查（先审查公式与实现一致性，再决定是否改代码）。
+
+---
+
+## 21. CUDA 数学主线第 1 轮：orthographic Jacobian 像素尺度一致化
+
+本节只记录 forward/backward 投影链路公式对齐，不涉及监督/loss 与数据管线改动。
+
+### 21.1 目标公式
+
+正交前向（当前 surrogate）保持：
+
+$$
+x_{ndc}=\operatorname{clamp}\left(\frac{2x_c}{S_x},-1.3,1.3\right),\quad
+y_{ndc}=\operatorname{clamp}\left(\frac{2y_c}{S_y},-1.3,1.3\right)
+$$
+
+像素映射：
+
+$$
+u=\frac{W}{2}(x_{ndc}+1)-\frac{1}{2},\quad
+v=\frac{H}{2}(y_{ndc}+1)-\frac{1}{2}
+$$
+
+因此 Jacobian 采用像素尺度：
+
+$$
+J_{ortho,pix}=
+\begin{bmatrix}
+W/S_x & 0 & 0 \\
+0 & H/S_y & 0 \\
+0 & 0 & 0
+\end{bmatrix}
+$$
+
+### 21.2 代码同步边界
+
+- `forward.cu::computeCov2D(...)`：orthographic Jacobian 改为像素尺度。
+- `backward.cu::computeCov2DCUDA(...)`：同口径改为像素尺度 Jacobian。
+- `backward.cu::preprocessCUDA(...)`：mean backward 按像素 Jacobian 与 NDC->pixel 映射显式一致化。
+- `auxiliary.h::in_frustum(...)`：新增 projection-aware orthographic/isar 分支。
+
+### 21.3 约束确认
+
+- perspective 数学路径保持原样（未改公式）。
+- 本轮仍是 orthographic/isar surrogate，不等同于真实 ISAR 物理成像模型。
+
+### 21.4 本轮最小验证结果（真实执行记录）
+
+1) CUDA 扩展重编译
+- 已成功重新编译。
+
+2) `stage_f_gradient_check.py`
+- `perspective_minimal`：PASS。
+- `orthographic_minimal`：PASS。
+- `orthographic_clamp_x`：脚本汇总为 FAIL，但该样本为边界 case（`radius <= 0`，未渲染），analytic 与 numeric 梯度均为 0。
+- 解释：该项反映的是边界可见性/采样覆盖行为，不应直接归类为主链 Jacobian 数学错误。
+
+3) 20 iter orthographic/isar smoke
+- 训练成功跑完。
+- 未出现 NaN / Inf / 崩溃。
+- post-train 检查 `finite_ok=True`。
+- 结论类别：PASS，未见明显 stability / visibility 异常。
+
+### 21.5 本轮判定
+
+- 在“重编译 + Stage F + 20iter smoke”最小验证口径下，CUDA 数学主线第 1 轮总体判定为 PASS。
+- `orthographic_clamp_x` 仅作为边界样本记录，结论上不构成主链 mean/covariance 数学失败证据。

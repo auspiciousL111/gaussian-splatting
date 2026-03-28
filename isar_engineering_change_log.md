@@ -583,6 +583,118 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 阶段 7.1：完成（perspective 多高斯不一致定位完成，确认先前误报源于验证脚本不一致）。
 - 阶段 8：完成（更长训练与基础对照实验完成）。
 
+---
+
+## 阶段 9：P2 最小监督修正（单通道 ISAR 监督入口）
+
+### 阶段名称
+阶段 9 - 保持 projection_mode 数学不变，最小切换到 ISAR 单通道监督分支
+
+### 本轮目标
+- 不改 forward/backward 数学。
+- 不扩多视角实验。
+- 在训练监督入口最小引入 ISAR 单通道语义：`render_gray` 对 `gt_1ch`。
+
+### 修改文件清单
+- train.py
+
+### 每个文件改了什么
+- train.py
+  - 在 `training(...)` 中增加 ISAR 数据检测（`poses.csv + images`）。
+  - 保留原有 RGB 兼容路径（含 1->3 临时扩通道）用于非 ISAR 或非 1ch GT。
+  - 对 ISAR 且 GT 为 `1xHxW` 时，新增最小监督分支：
+    - `render_gray = image.mean(dim=0, keepdim=True)`
+    - `Ll1 = l1_loss(render_gray, gt_image)`
+    - `ssim(render_gray, gt_image)`（或 fused_ssim 对应 1ch 张量）
+
+### 为什么这样改
+当前阶段目标是先把监督域从“临时 RGB 兼容”切到“单通道强度语义”，且尽量只改损失入口，避免回归扩散。
+
+### 最小验证
+1) 2-iter smoke（P2）
+- 模型：`output/stage_p2_smoke_2it`
+- 训练完成，无 NaN。
+- 训练评估：`L1=0.106824`，`PSNR=11.8761`
+- post-check（黑底一致约定）：PASS
+
+2) 100-iter 小训练（P2）
+- 模型：`output/stage_p2_isar_100it`
+- 训练完成，无 NaN。
+- 训练评估：`L1=0.104061`，`PSNR=12.2533`
+- post-check（黑底一致约定）：PASS
+
+### 与当前 P0/P1 基线对比（同迭代 100、同相机）
+基线：`output/stage_h_compare_100_train0_p0p1/stats.json`
+P2：`output/stage_p2_compare_100_train0/stats.json`
+
+isar 关键指标：
+- `l1_vs_gt`: `0.1065967 -> 0.1066627`（基本持平）
+- `psnr_vs_gt`: `12.0107 -> 12.0087`（基本持平）
+- 强度分位数 `q95`: `0.0380409 -> 0.0379347`（基本持平）
+- 强度分位数 `q99`: `0.1920348 -> 0.1920035`（基本持平）
+
+结果图目录：
+- 基线：`output/stage_h_compare_100_train0_p0p1`
+- P2：`output/stage_p2_compare_100_train0`
+
+### 本轮结论
+- P2 已按“最小改动”成功落地，训练稳定性正常。
+- 但在当前 100 iter 小训练尺度下，`l1_vs_gt` / `psnr_vs_gt` / 强度分位数与旧监督几乎无差别。
+- 结论：P2 本身尚未显著改善“能量太低、结构太弱”，但为后续仅监督侧策略优化提供了正确单通道入口。
+
+---
+
+## 阶段 10：P2 长训练复核（500/1000）
+
+### 阶段名称
+阶段 10 - 固定评估条件下验证 P2 在更长训练尺度是否带来可观提升
+
+### 固定评估条件
+- 同一数据路径：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+- 同一 camera index：`0`
+- 同一背景约定：黑底（`isar_source_forces_black`）
+- 训练入口种子：`safe_state(args.quiet)` 固定种子
+
+### 执行内容
+1) 基线补齐（旧监督，P0/P1 口径）
+- 迭代 500 对照导出：`output/stage_h_compare_500_train0_p0p1`
+
+2) P2 长训练
+- 从 `output/stage_p2_isar_100it/chkpnt100.pth` 续跑到 500：`output/stage_p2_isar_prog`
+- 再从 `output/stage_p2_isar_prog/chkpnt500.pth` 续跑到 1000：`output/stage_p2_isar_prog`
+
+3) P2 对照导出
+- 500：`output/stage_p2_compare_500_train0`
+- 1000：`output/stage_p2_compare_1000_train0`
+
+4) 体检
+- `stage_g_posttrain_render_check.py` 在 500/1000 均 PASS
+
+### 单通道主指标对比（modes_intensity.isar）
+
+iter 500：
+- baseline：`l1=0.1058992`, `psnr=12.0031`, `q50=0.0000`, `q95=0.0235380`, `q99=0.2553159`, `contrast=q99-q50=0.2553159`
+- P2：`l1=0.1058583`, `psnr=12.0022`, `q50=0.0000`, `q95=0.0226716`, `q99=0.2516983`, `contrast=0.2516983`
+- 结论：500 时几乎无提升（部分指标略降）。
+
+iter 1000：
+- baseline：`l1=0.1041314`, `psnr=12.0929`, `q50=0.0000`, `q95=0.0231546`, `q99=0.4426408`, `contrast=0.4426408`
+- P2：`l1=0.1032408`, `psnr=12.1493`, `q50=0.0000`, `q95=0.0279638`, `q99=0.4688222`, `contrast=0.4688222`
+- 结论：1000 时出现温和提升，尤其高分位与对比度提升。
+
+门槛检查（相对 baseline）：
+- iter 500：`l1_improve=+0.039%`, `psnr_gain=-0.001dB`, `q95_gain=-3.68%`, `q99_gain=-1.42%`
+- iter 1000：`l1_improve=+0.855%`, `psnr_gain=+0.056dB`, `q95_gain=+20.77%`, `q99_gain=+5.92%`
+
+### 视觉复核结论
+- 500：P2 与 baseline 视觉上几乎一致，主散射团结构变化不明显。
+- 1000：P2 的亮散射点更活跃、局部对比度更强（与 `q95/q99/contrast` 提升一致）。
+- 但整体形态仍以稀疏散点云为主，与 GT 的主结构分布仍有明显差距。
+
+### 本轮结论
+- P2 在更长训练尺度下不是“完全无效”：到 1000 iter 出现了可测提升。
+- 该提升仍不足以解决“结构太弱”的核心问题，建议进入下一小阶段 P2.1（仅监督/loss 侧增强）。
+
 ## 后续更新提醒
 后续每个阶段都需要同步更新本文件，且必须包含：
 - 实际改动文件与函数边界。
@@ -590,5 +702,124 @@ ISAR 数据已经可以端到端进入 3DGS Python 场景管线。
 - 临时方案是否已替换。
 - 下一阶段依赖关系。
 
+---
+
+## 阶段 11：P2.1A 小调参结论固化（仅监督侧）
+
+### 阶段名称
+阶段 11 - 在候选 A 形式不变前提下验证“权重过强”假设
+
+### 本轮目标
+- 不改 forward/backward 数学。
+- 不扩多视角。
+- 仅在候选 A 形式
+  - $w = 1 + \alpha I_{gt}^{\gamma}$
+  - $L_{wL1}=\frac{\sum w|I_{pred}-I_{gt}|}{\sum w}$
+  下做温和参数测试。
+
+### 执行参数与范围
+- 已有对照：`alpha=2.0, gamma=2.0`
+- 新测两组：
+  - `alpha=1.0, gamma=2.0`
+  - `alpha=1.0, gamma=1.5`
+- 每组仅跑 100/500 iter。
+
+### 关键结论
+- 两组温和参数均保留了高分位增强信号（`q95/q99/contrast` 相对 P2 提升）。
+- 在“亮尾增强 vs 全局 L1 恶化”平衡上，`alpha=1.0, gamma=2.0` 最优。
+- 固化结论：候选 A 当前最优监督版本为 `P2.1A(alpha=1.0, gamma=2.0)`。
+
+---
+
+## 阶段 12：P2.1B 最小接入与 100 iter 结论
+
+### 阶段名称
+阶段 12 - 候选 B 最小接入与 100 iter 对照（不扩任务）
+
+### 候选 B 形式
+$$
+L = \lambda_1 \cdot |I_{pred}-I_{gt}| + \lambda_2 \cdot \left|\log(1+\beta I_{pred})-\log(1+\beta I_{gt})\right|
+$$
+
+### 最小接入
+- 仅改训练监督/loss 侧，不改 forward/backward、reader、renderer。
+- 默认参数：`lambda1=1.0, lambda2=0.2, beta=10.0`。
+- 2-iter smoke：PASS。
+
+### 100 iter 同口径对比（主判据 `modes_intensity.isar`）
+- 固定条件一致：
+  - source：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+  - `camera_index=0`
+  - 背景：`isar_source_forces_black`
+- 指标摘要：
+  - P2：`l1=0.1066627`, `psnr=12.0087`, `q95=0.0379347`, `q99=0.1920035`
+  - P2.1A(a=1.0,g=2.0)：`l1=0.1067583`, `psnr=12.0483`, `q95=0.0513908`, `q99=0.2241794`
+  - P2.1B：`l1=0.1069182`, `psnr=12.0178`, `q95=0.0464204`, `q99=0.2018639`
+
+### 本轮结论
+- P2.1B 在 100 iter 下未明显优于当前最优 P2.1A(a=1.0,g=2.0)。
+- 决策：暂不推进 P2.1B 到 500/1000，也不继续扩更多 loss 变体。
+- 当前最优监督版本维持为：`P2.1A(alpha=1.0, gamma=2.0)`。
+
+---
+
+## 阶段切换说明（下一阶段）
+
+- 监督侧扩展在当前节点暂停。
+- 下一阶段转入：CUDA 数学公式审查（先审查，不先改实现）。
+
+---
+
+## 阶段 13：orthographic Jacobian 像素尺度对齐（CUDA 数学主线第 1 轮）
+
+### 阶段名称
+阶段 13 - 将 orthographic/isar Jacobian 从 NDC 标度改为像素尺度一致形式，并前后向同步
+
+### 本轮目标
+- 仅改 CUDA 投影数学链路，不改 loss/reader/renderer。
+- perspective 路径保持原样。
+
+### 修改文件清单
+- `submodules/diff-gaussian-rasterization/cuda_rasterizer/forward.cu`
+- `submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu`
+- `submodules/diff-gaussian-rasterization/cuda_rasterizer/auxiliary.h`
+
+### 每个文件改了什么
+- `forward.cu`
+  - `computeCov2D(...)` 的 orthographic 分支 Jacobian 改为像素尺度：
+    - 由原 `diag(2/Sx, 2/Sy)`
+    - 改为 `diag(W/Sx, H/Sy)`（实现中用 `focal*tan_fov` 还原 `W/2`,`H/2`）。
+  - `preprocessCUDA(...)` 调用 projection-aware 的 `in_frustum(...)`。
+
+- `backward.cu`
+  - `computeCov2DCUDA(...)` 的 orthographic 分支 Jacobian 同步改为像素尺度版本。
+  - `preprocessCUDA(...)` 的 orthographic mean backward 链按像素 Jacobian 与 NDC->pixel 映射显式一致化（数值等价于原链，但表达与 covariance 链口径统一）。
+
+- `auxiliary.h`
+  - `in_frustum(...)` 新增 projection-aware 重载：
+    - perspective 保持原投影路径；
+    - orthographic/isar 使用 view-space 线性映射分支。
+  - 保留旧签名 wrapper，兼容既有 perspective 调用点。
+
+### 验证方式与结果
+1) CUDA 扩展重编译
+- 结果：成功。
+
+2) `stage_f_gradient_check.py`
+- `perspective_minimal`：PASS。
+- `orthographic_minimal`：PASS。
+- `orthographic_clamp_x`：脚本汇总记为 FAIL，但该 case 为边界样本（`radius <= 0`，未渲染），输出表现为 analytic/numeric 梯度均为 0。
+- 判读：该项属于边界可见性/采样覆盖 case，不判定为主链 Jacobian 数学失败。
+
+3) 20 iter orthographic/isar smoke
+- 训练 20 iter 成功跑完。
+- 运行中未出现 NaN / Inf / 崩溃。
+- post-train 检查 `finite_ok=True`。
+- 结论类别：PASS，未见明显 stability / visibility 异常。
+
+### 本轮结论
+- 已完成 orthographic 分支 Jacobian 像素尺度一致化，并同步到 forward/backward 的 covariance 与 mean 链。
+- perspective 路径未做公式修改。
+- 最小验证口径下，本轮主线判定为 PASS；`orthographic_clamp_x` 仅记录为边界 case，不作为主链失败证据。
 
 
