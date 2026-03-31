@@ -851,3 +851,309 @@ $$
 
 - 在“重编译 + Stage F + 20iter smoke”最小验证口径下，CUDA 数学主线第 1 轮总体判定为 PASS。
 - `orthographic_clamp_x` 仅作为边界样本记录，结论上不构成主链 mean/covariance 数学失败证据。
+
+### 21.6 math-1 后 500 iter 同口径复测
+
+为判断 math-1 是否对当前最优监督版本产生真实收益，追加执行与历史 `P2.1A(alpha=1.0, gamma=2.0)` 一致的 500 iter 复测：
+
+- 监督口径固定为 candidate-A：
+  - `--isar_supervision_mode a`
+  - `--isar_l1_weight_alpha 1.0`
+  - `--isar_l1_weight_gamma 2.0`
+- compare 口径固定为：
+  - 同一数据路径
+  - 同一 `camera_index=0`
+  - 同一黑底约定
+
+对比对象均取 `modes_intensity.isar`：
+
+- 历史 P2.1A@500：
+  - `l1_vs_gt=0.1064154`
+  - `psnr_vs_gt=12.0270`
+  - `q50=0.0000`
+  - `q95=0.04117`
+  - `q99=0.31792`
+  - `contrast = q99 - q50 = 0.31792`
+
+- math-1 后 @500：
+  - `l1_vs_gt=0.0790435`
+  - `psnr_vs_gt=14.2756`
+  - `q50=0.0000`
+  - `q95=0.64650`
+  - `q99=0.76506`
+  - `contrast = q99 - q50 = 0.76506`
+
+### 21.7 复测判读
+
+- 从误差与重建质量指标看，math-1 后 500 iter 相比历史 P2.1A@500 有显著提升：
+  - $L_1$ 明显下降；
+  - PSNR 明显上升；
+  - 高分位响应（$q95, q99$）显著抬升。
+- 这说明 orthographic Jacobian 像素尺度一致化与 projection-aware visibility 修正不是“仅数学上自洽”，而是已经对训练结果产生了实质正效应。
+- 但从响应分布看，当前结果仍偏“亮斑团/散射团块”形态，而非已经形成紧致、清晰的目标结构；换言之，math-1 有收益，但还不足以单独解决更深层的 ISAR 表示与观测模型问题。
+
+---
+
+## 22. math2 长训练验证（500 / 1000）
+
+本节记录当前 math2 代码状态下的长训练实证结果。注意：本轮不再新增源码改动，只验证现有 math2 状态是否比 `math-1 + candidate-A` 更进一步。
+
+### 22.1 固定实验口径
+
+- supervision 固定为 candidate-A：
+  - `--isar_supervision_mode a`
+  - `--isar_l1_weight_alpha 1.0`
+  - `--isar_l1_weight_gamma 2.0`
+- 数据与 compare 口径固定为：
+  - `D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+  - `camera_split=train`
+  - `camera_index=0`
+  - 黑底约定：`isar_source_forces_black`
+
+### 22.2 真实执行结果
+
+#### math2 @500
+
+- post-train render check：PASS
+- `finite_ok=True`
+- `modes_intensity.isar`：
+  - `l1_vs_gt=0.0830301`
+  - `psnr_vs_gt=14.0252`
+  - `q50=0.0000`
+  - `q95=0.65106`
+  - `q99=0.76771`
+  - `contrast = q99 - q50 = 0.76771`
+
+#### math2 @1000
+
+- post-train render check：PASS
+- `finite_ok=True`
+- `modes_intensity.isar`：
+  - `l1_vs_gt=0.0654826`
+  - `psnr_vs_gt=15.2993`
+  - `q50=0.0000`
+  - `q95=0.59736`
+  - `q99=0.78504`
+  - `contrast = q99 - q50 = 0.78504`
+
+### 22.3 与 math-1 baseline 的直接对比
+
+对比对象仍取当前主 baseline：
+
+- `math-1 + candidate-A@500`
+  - `l1_vs_gt=0.0790435`
+  - `psnr_vs_gt=14.2756`
+  - `q50=0.0000`
+  - `q95=0.64650`
+  - `q99=0.76506`
+  - `contrast=0.76506`
+
+- `math-1 + candidate-A@1000`
+  - `l1_vs_gt=0.0631026`
+  - `psnr_vs_gt=15.4842`
+  - `q50=0.0000`
+  - `q95=0.58482`
+  - `q99=0.78731`
+  - `contrast=0.78731`
+
+对比判读：
+
+- 500 iter：
+  - math2 的 $q95/q99$ 略高；
+  - 但 $L_1$ 更差、PSNR 更低；
+  - 因而不能判定为优于 math-1。
+
+- 1000 iter：
+  - math2 的 $q95$ 略高；
+  - 但 $L_1$ 更差、PSNR 更低，且 $q99/contrast$ 也未占优；
+  - 因而同样不能判定为优于 math-1。
+
+### 22.4 视觉复核结论
+
+- math2 在 500 / 1000 iter 下都仍主要表现为亮而厚的散射/白点团块。
+- 相比 math-1，响应区域并未更集中，反而更有“铺宽”倾向：
+  - 500 iter：`nonzero_ratio` 从 `0.2896` 升到 `0.2926`
+  - 1000 iter：`nonzero_ratio` 从 `0.2929` 升到 `0.3053`
+- 这意味着 math2 当前带来的不是“结构收紧”，而更像“亮响应继续变厚”。
+
+### 22.5 本轮最终判断
+
+- 从长训练结果看，math2 整体应归类为“更差”而不是“更好”或“持平”。
+- 它没有继续扩大 math-1 已取得的有效收益，反而暴露出几何数学继续推进的边际收益已经很弱。
+- 因此下一步不建议继续把主线押在 math，建议转向更干净的单通道 renderer，再讨论更真实的 ISAR 观测算子。
+
+### 22.6 主线回退说明
+
+在完成 500 / 1000 iter 长训练验证后，math2 未显示出相对 `math-1 + candidate-A` 的稳定优势，因此主线已回退到 math-1。
+
+回退原则：
+
+- 只撤销 math2 额外引入的 coarse visibility 接口透传；
+- 不改动 `forward.cu / backward.cu / auxiliary.h` 中已确认有效的 math-1 数学主链；
+- 不改动 candidate-A 的监督入口。
+
+回退后追加执行 500 iter 回归复测，得到：
+
+- `l1_vs_gt=0.0806888`
+- `psnr_vs_gt=14.2163`
+- `q50=0.0000`
+- `q95=0.64172`
+- `q99=0.77028`
+- `contrast=0.77028`
+
+与既有 `math-1 + candidate-A@500`：
+
+- `l1_vs_gt=0.0790435`
+- `psnr_vs_gt=14.2756`
+- `q95=0.64650`
+- `q99=0.76506`
+
+相比仅有轻微数值波动，整体仍处于同一性能区间，因此可以判定当前代码状态已经回到 `math-1 + candidate-A` 主线，而不是残留在 math2。
+
+---
+
+## 23. 单通道 renderer 最小闭环验证说明（R2-min）
+
+本节仅记录已真实执行过的最小闭环验证结论，不引入新实验与新数学改动。
+
+### 23.1 当前单通道 renderer 的实际语义
+
+- 在当前运行时二进制与源码一致后，rasterizer 的有效输出已回到单通道强度语义。
+- 上层训练与检查路径按单通道强度进行主判读：
+  - 2 iter 训练 smoke 可执行；
+  - Stage G 的核心检查量基于单通道 intensity；
+  - Stage H 的 `modes_intensity` 统计也是单通道。
+
+当前固定监督口径保持为 candidate-A：
+
+$$
+w = 1 + \alpha I_{gt}^{\gamma},\quad (\alpha,\gamma)=(1.0,2.0)
+$$
+
+对应参数开关为：
+- `--isar_supervision_mode a`
+- `--isar_l1_weight_alpha 1.0`
+- `--isar_l1_weight_gamma 2.0`
+
+### 23.2 这轮验证已经说明了什么
+
+- 通过重建 `diff_gaussian_rasterization` 扩展并完成一致性复核，render shape/channel 已恢复到单通道主语义。
+- 在 `math-1 + candidate-A` 下，R2-min 的最小链路已闭环通过：
+  - forward/render shape 复核通过；
+  - 2 iter 训练 smoke 通过；
+  - Stage G 通过；
+  - Stage H 通过。
+- 该结果足以支持“当前不回退主线”的工程决策。
+
+### 23.3 这轮验证尚未说明什么
+
+- 尚不能据此证明“长程训练稳定 baseline”已经成立。
+- 尚不能据此证明 exposure 分支已经彻底收敛。
+  - 观察事实：本轮 exposure 未出现爆炸。
+  - 但 `exposure_optimizer.step()` 仍在训练循环中，需后续独立审查其必要性与收敛行为。
+- 尚不能据此声称所有兼容问题均已完全收尾。
+
+### 23.4 Stage H 中 intensity 与 raw 分支的区别
+
+- `modes_intensity`：用于单通道强度语义的统计与对照，当前结果为 `shape=(1,1200,1200)`，是本轮主判据。
+- `modes`（raw）：保留渲染可视化兼容输出，当前可见 `shape=(3,1200,1200)`。
+
+解释：上述“intensity=1 通道、raw=3 通道”是当前兼容形态，不应在本轮被记为失败信号。
+
+---
+
+## 24. R2-min@500 同口径判定（相对 math-1 baseline）
+
+本节只记录已执行完成的 500 iter 同口径对比结果，不引入新实现与新实验设计。
+
+### 24.1 对比对象与主判据
+
+- baseline：`math-1 + candidate-A@500`
+  - `output/stage_m1_retest_p21a_compare_500_train0/stats.json`
+- 当前：`R2-min@500`
+  - `output/r2min_cons500_compare_20260331/stats.json`
+- 主判据统一取：`modes_intensity.isar`
+
+### 24.2 500 iter 对比结果说明了什么
+
+本次结果呈现“分布尾部略增强，但整体误差口径不占优”的结构：
+
+- 误差/重建主指标：
+  - `l1_vs_gt` 变大（更差）
+  - `psnr_vs_gt` 变小（更差）
+- 分布与强响应指标：
+  - `q95/q99` 略升
+  - `contrast` 略升
+  - `nonzero_ratio` 略升
+
+其中对比使用：
+
+$$
+	ext{contrast} = q99 - q50
+$$
+
+### 24.3 为什么不能判为“真正胜出”
+
+- 若 `q99/contrast` 略升，但 `L1/PSNR` 同时下降，则只能说明响应分布更强或更宽，不足以证明整体重建质量提升。
+- 本轮还观察到 `nonzero_ratio` 上升，和“响应覆盖变宽”一致；该现象更接近分布形态变化，而非主指标改进。
+
+因此当前更合理的解释是：
+- R2-min 在单通道语义与工程链路上更干净；
+- 但在 500 iter 的核心误差口径下暂未优于主 baseline；
+- 其定位仍应是“候选实现/分布变化”，不是“更优主线”。
+
+### 24.4 当前主线结论
+
+截至本轮，主线仍应保持 `math-1 + candidate-A`，R2-min 暂不替代 baseline。
+
+## 25. 显式标量散射独立通道的理论动机
+
+### 25.1 为什么要将单通道拆解到表示层
+过往实现里，将 ISAR 视作“光度渲染（RGB -> Grayscale）的特例”，这让模型优化必须通过 `SH2RGB` 仿射变换并承受多通道梯度的冗余耦合。真正物理对齐的方式，应该是将散射率定义为单一参数并在渲染时直通物理映射层，消除通道互串。
+
+## 26. 显式标量散射通道的最小激活映射改造
+
+### 26.1 `softplus` 平滑激活的意义
+- 历史代码通过 `clamp_min` 防守非正域，存在梯度硬死区（截断会导致梯度丢失从而参数失活）。
+- `softplus` 提供了一个从对数空间到线性物理强度的平滑正域激活。
+
+## 27. 去光学化初始化与显式标量映射
+
+### 27.1 光学球谐假设与物理正域映射的矛盾与解耦
+原来基于 `RGB2SH` 的逻辑在初始化时认为颜色是一个光度概念。我们在改动了渲染公式后，若渲染链路是 $O_{scatter} = \operatorname{softplus}(x)$，那么参数 $x$ 的初始值如果不经对齐而盲目截断或者沿用 SH 参数，会导致大量参数在网络启动时就处于不利收敛甚至是极其紧绷的梯度空间中。
+
+### 27.2 物理级逆隐层表出
+为了保证物理对齐，我们将所有点云在第 0 次 iteration 的强度统一设定为逆向推导的初始分布：
+$$ x_{init} = \ln(e^{S_{intensity}} - 1) $$
+这个分布配合渲染链路上的 $\operatorname{softplus}$ 映射构成了恒等映射（在强度极小时引入 `1e-4` 的截断避免溢出）：
+$$ \operatorname{softplus}(\ln(e^S - 1)) = \ln(1 + e^{\ln(e^S - 1)}) = \ln(1 + e^S - 1) = S $$
+这一推导证明了从 `scene` 的初始构建，到 `model` 表示计算，再到 `renderer` 的正向推演，完成了端到端的逻辑闭环，显著弥合了激活引入初期的精度损失。
+
+## 28. 显式物理表示层在长程监督中的收敛极限
+
+### 28.1 1000-iter 全局比对的启示
+在阶段 21 对“去光学化 + `softplus` 正域映射”进行的 1000 iterations 压力测试中证实，模型表现出了极高的一致性并彻底排除了训练崩溃问题。但面对基于 `clamp_min` 这种粗暴且不具备良好梯度行为的主线基线，更完善的纯物理表示分支在绝对 L1 与 PSNR 误差上表现旗鼓相当，却依旧微弱落后（L1 相差 $\sim 0.0006$）。
+
+### 28.2 为什么更完善的物理模型没有形成参数压制？
+- **观测模型代差**：物理表示被纯化为单通道物理极化数值后，损失函数或观测生成层面仍缺乏雷达特有的物理观测算子（如基于雷达带宽的包络、相位衰落）。
+- **优化天花板验证**：这证明 `Representation Layer`（表示层）的内部表达维度（单通道连续正则激活）已达到了它能贡献的最优物理极值上限，逼近了现有的 L1/SSIM（光学视觉遗留）所能监督的解析边界。
+- 当前结论指明了下一个理论破局点：我们必须跨过“表示层构建”，朝向 `Observation/Operator Layer`（观测算子层）甚至 `Loss`（损失函数层）的非相干/相干映射改进，才能实质性打破现有的 `15.4dB` 瓶颈。
+
+## 29. 观测层初步：最小观测算子与双域对抗
+
+### 29.1 L1 对数化重构的陷阱
+在本实验中，引入了 log1p(I) 将具有重尾、高动态特性的雷达散射信号包络进行了显著压制。
+原设想：由软化分布消减强光点带来的梯度爆炸与训练初期主导性方差。
+实际结果：3DGS 与传统 MLP 截然不同。\L1 + log1p\ 的直接使用不仅抹除了收敛的高亮误差边界，同时也直接拔除了 Gaussians 球体赖以进行分裂（Split）和克隆（Clone）的核心梯度来源。渲染的高频细节因为误差过早闭合被忽视，导致模型拟合不足。
+
+### 29.2 双域监督（Dual-domain Supervision）的干涉效应
+第二阶段引入了强弱并行的组合场：
+\$L = \sum W \cdot |I - I_{gt}| + \beta \sum |\log_{e}(1+I) - \log_{e}(1+I_{gt})|$\。
+本以为这可以给低能量区域提供辅助引导。但由于两者针对的误差极化方向截然相反，这一混合算子使得原本集中往强烈点中心偏移聚集的 3D 高斯点云发生扩散和迷失。
+此项理论实证验证：对于 3D 高斯在雷达图像等高动态（HDR）领域的监督优化，算子的非线性压制不可轻易引入 L1 反向传播主链，它需要采取诸如后续后处理渲染、或者结构上的剥离方法进行解耦研究才更安全。
+
+
+
+## 30. Observation Operator Decoupling Principle
+Following the confirmed structural failure of blending HDR suppressions (like \log1p\) directly inside the training iteration gradient loops (see 29.1 and 29.2), the system explicitly segments pply_isar_observation_operator to run post-hoc.
+The observation transformations are strictly decoupled interfaces applied solely during eval/export steps against strictly RAW-trained geometry. This theoretically preserves Gaussian topological propagation gradients while retaining evaluation layer comparability (modes_intensity_obs) toward future ISAR physics integrations.

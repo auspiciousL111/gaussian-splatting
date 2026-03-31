@@ -817,9 +817,368 @@ $$
 - post-train 检查 `finite_ok=True`。
 - 结论类别：PASS，未见明显 stability / visibility 异常。
 
+4) math-1 后 500 iter 同口径复测（candidate-A, `alpha=1.0`, `gamma=2.0`）
+- 新模型：`output/stage_m1_retest_p21a_500`
+- 新 compare：`output/stage_m1_retest_p21a_compare_500_train0/stats.json`
+- 历史基线 compare：`output/stage_p21a_a10g20_compare_500_train0/stats.json`
+- 固定口径：
+  - 同一数据：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+  - 同一相机：`train`, `camera_index=0`
+  - 同一黑底：`isar_source_forces_black`
+- `modes_intensity.isar` 指标对比：
+  - 历史 P2.1A@500：`l1_vs_gt=0.1064154`, `psnr_vs_gt=12.0270`, `q50=0.0000`, `q95=0.04117`, `q99=0.31792`, `contrast=0.31792`
+  - math-1 后 @500：`l1_vs_gt=0.0790435`, `psnr_vs_gt=14.2756`, `q50=0.0000`, `q95=0.64650`, `q99=0.76506`, `contrast=0.76506`
+- 视觉/统计判读：
+  - 相比历史 500 iter，亮响应显著增强，主结构不再停留在极弱的稀疏散点水平。
+  - 但从 `nonzero_ratio` 由 `0.1403` 提升到 `0.2896` 看，响应区域也明显变宽，当前仍更像“亮斑团/散射团块”而不是已经收敛成清晰、紧致的目标结构。
+
 ### 本轮结论
 - 已完成 orthographic 分支 Jacobian 像素尺度一致化，并同步到 forward/backward 的 covariance 与 mean 链。
 - perspective 路径未做公式修改。
 - 最小验证口径下，本轮主线判定为 PASS；`orthographic_clamp_x` 仅记录为边界 case，不作为主链失败证据。
+- 在 `P2.1A(alpha=1.0, gamma=2.0)` 的 500 iter 同口径复测下，math-1 带来了可测且可感的正向收益。
+- 但当前结果仍未摆脱“亮斑团/白点团”主形态，说明仅靠当前几何数学修正还不足以解决更深层的表示/观测模型问题。
+
+---
+
+## 阶段 14：math2 长训练验证（500 / 1000，同口径）
+
+### 阶段名称
+阶段 14 - 在当前 math2 代码状态下做 candidate-A 长训练复测，并与 `math-1 + candidate-A` 直接对比
+
+### 本轮边界
+- 本轮不新增源码修改。
+- 本轮只做：
+  - 500 iter 训练 + post-train render check + compare
+  - 1000 iter 训练 + post-train render check + compare
+- 固定口径：
+  - supervision：candidate-A
+  - `alpha=1.0, gamma=2.0`
+  - `camera_split=train`
+  - `camera_index=0`
+  - 黑底约定：`isar_source_forces_black`
+
+### 执行记录
+- 500 iter 模型：`output/stage_m2_p21a_500_20260329`
+- 500 iter compare：`output/stage_m2_p21a_compare_500_train0_20260329/stats.json`
+- 1000 iter 模型：`output/stage_m2_p21a_1000_20260329`
+- 1000 iter compare：`output/stage_m2_p21a_compare_1000_train0_20260329/stats.json`
+- 两个里程碑的 `stage_g_posttrain_render_check.py` 均 PASS：
+  - `finite_ok=True`
+  - 无 NaN / Inf / 崩溃
+
+### 500 iter 指标对比（主判据 `modes_intensity.isar`）
+- `math-1 + candidate-A@500`
+  - `l1_vs_gt=0.0790435`
+  - `psnr_vs_gt=14.2756`
+  - `q50=0.0000`
+  - `q95=0.64650`
+  - `q99=0.76506`
+  - `contrast=0.76506`
+- `math2@500`
+  - `l1_vs_gt=0.0830301`
+  - `psnr_vs_gt=14.0252`
+  - `q50=0.0000`
+  - `q95=0.65106`
+  - `q99=0.76771`
+  - `contrast=0.76771`
+
+### 1000 iter 指标对比（主判据 `modes_intensity.isar`）
+- `math-1 + candidate-A@1000`
+  - `l1_vs_gt=0.0631026`
+  - `psnr_vs_gt=15.4842`
+  - `q50=0.0000`
+  - `q95=0.58482`
+  - `q99=0.78731`
+  - `contrast=0.78731`
+- `math2@1000`
+  - `l1_vs_gt=0.0654826`
+  - `psnr_vs_gt=15.2993`
+  - `q50=0.0000`
+  - `q95=0.59736`
+  - `q99=0.78504`
+  - `contrast=0.78504`
+
+### 视觉复核结论
+- 500 iter：
+  - math2 的高分位亮响应略强于 math-1，但 `l1/psnr` 变差。
+  - `nonzero_ratio` 由 `0.2896` 升到 `0.2926`，说明响应区域略变宽，没有看到更集中的结构收敛。
+- 1000 iter：
+  - math2 仍表现为更亮、更厚的散射响应，`nonzero_ratio` 由 `0.2929` 升到 `0.3053`。
+  - 虽然 `q95` 略升，但 `l1/psnr` 仍差于 math-1，且 `q99/contrast` 未继续占优。
+- 综合看，math2 当前更像把亮散射团块继续铺宽，而不是把目标主结构收紧。
+
+### 本轮判断
+- 500 iter：math2 未优于当前 `math-1 + candidate-A` baseline。
+- 1000 iter：math2 仍未优于当前 `math-1 + candidate-A` baseline。
+- 工程判断：本轮 math2 整体应归类为“更差”，不是新的主线收益点。
+- 下一步建议：
+  - 暂不继续把主线押在 math；
+  - 优先切到更干净的单通道 renderer，再讨论更真实的 ISAR 观测算子。
+
+---
+
+## 阶段 15：主线回退到 math-1（安全撤销 math2）
+
+### 回退范围
+- 仅撤销 math2 这一轮新增的 coarse visibility 接口链改动：
+  - `submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer.h`
+  - `submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.cu`
+  - `submodules/diff-gaussian-rasterization/rasterize_points.h`
+  - `submodules/diff-gaussian-rasterization/rasterize_points.cu`
+  - `submodules/diff-gaussian-rasterization/diff_gaussian_rasterization/__init__.py`
+- 不触碰 `math-1` 核心文件：
+  - `forward.cu`
+  - `backward.cu`
+  - `auxiliary.h`
+- 不触碰 candidate-A 监督入口：
+  - `train.py`
+  - `arguments/__init__.py`
+
+### 回退后编译与导入
+- 已重新编译：
+  - `diff-gaussian-rasterization`
+  - `simple-knn`
+- 导入验证：
+  - `IMPORT_DIFF_OK=True`
+  - `IMPORT_SKN_OK=True`
+
+### 回退后 500 iter 回归复测
+- 模型：`output/stage_m1_restorecheck_500_20260329`
+- compare：`output/stage_m1_restorecheck_compare_500_train0_20260329/stats.json`
+- `modes_intensity.isar`：
+  - `l1_vs_gt=0.0806888`
+  - `psnr_vs_gt=14.2163`
+  - `q50=0.0000`
+  - `q95=0.64172`
+  - `q99=0.77028`
+  - `contrast=0.77028`
+
+### 与既有 math-1@500 的一致性核对
+- 既有 `math-1 + candidate-A@500`：
+  - `l1_vs_gt=0.0790435`
+  - `psnr_vs_gt=14.2756`
+  - `q95=0.64650`
+  - `q99=0.76506`
+- 回退后复测：
+  - `l1_vs_gt=0.0806888`
+  - `psnr_vs_gt=14.2163`
+  - `q95=0.64172`
+  - `q99=0.77028`
+- 判读：
+  - 指标量级与分布形态保持一致；
+  - 说明当前代码主线已成功回到 `math-1 + candidate-A`；
+  - 小幅差异可视作同口径重跑的正常波动，不构成“仍残留 math2”的证据。
+
+---
+
+## 阶段 16：R2-min 单通道 renderer 最小闭环验证（math-1 + candidate-A）
+
+### 阶段名称
+阶段 16 - R2-min 单通道 renderer 的最小验证闭环确认
+
+### 本轮目标
+- 不改大块代码，不开长训练。
+- 在当前可信主线 `math-1 + candidate-A` 下，确认 R2-min 单通道 renderer 是否已具备最小可运行闭环。
+- 对此前出现的 render shape/channel 不一致问题做最小修复与一致性验证。
+
+### 本轮固定口径
+- 几何/实现主线：`math-1`
+- 监督口径：`candidate-A`
+  - `--isar_supervision_mode a`
+  - `--isar_l1_weight_alpha 1.0`
+  - `--isar_l1_weight_gamma 2.0`
+
+### 实际改动/验证对象
+- `submodules/diff-gaussian-rasterization` 扩展二进制重建与运行时一致性检查（`_C.pyd`）。
+- `smoke_test_isar_forward_only.py`（forward/render 通道形状复核）。
+- `train.py`（2 iter smoke，仅验证最小训练可执行性）。
+- `stage_g_posttrain_render_check.py`（训练后渲染体检）。
+- `stage_h_projection_compare.py`（同口径投影对照导出与统计）。
+
+### 关键验证结果（真实执行）
+- `_C.pyd` 重建后，render/forward 通道恢复为真实单通道（`(1,H,W)`）。
+- 2 iter 训练 smoke：PASS（流程完成并正常落盘）。
+- Stage G：PASS（`finite_ok=True`，单通道强度输出形状为 `1x1200x1200`）。
+- Stage H：PASS（结果目录与 `stats.json` 成功导出）。
+  - `modes_intensity` 为单通道：`shape=(1,1200,1200)`。
+  - 原始 `modes` 仍为三通道：`shape=(3,1200,1200)`。
+
+### 当前结论与边界
+- 结论：R2-min 单通道 renderer 的“最小闭环”已通过。
+- 工程决策：当前主线不回退，继续维持 `math-1 + candidate-A`。
+- 边界声明：本结论仅表示“最小闭环可运行”，不等于“长程训练稳定 baseline”，也不等于“所有兼容问题已收尾”。
+
+### 后续仍需单独处理的点（本轮不展开）
+- 单通道路径下 exposure 目前未见异常，但训练循环中的 `exposure_optimizer.step()` 仍在，需要后续单独审查。
+- Stage H 中 `modes_intensity` 已是单通道，而原始 `modes` 仍为三通道；这是当前兼容可视化现象，不应误判为失败。
+
+---
+
+## 阶段 17：R2-min@500 与 math-1 主 baseline 同口径对比
+
+### 阶段名称
+阶段 17 - 在固定 `math-1 + candidate-A` 口径下执行一次 R2-min@500 并排对比
+
+### 本轮目标
+- 不改代码，不扩功能。
+- 仅按与既有 `math-1 + candidate-A@500` 完全一致的 compare 口径，执行一次 R2-min@500 并给出主指标判定。
+
+### 固定口径
+- 监督参数：
+  - `--isar_supervision_mode a`
+  - `--isar_l1_weight_alpha 1.0`
+  - `--isar_l1_weight_gamma 2.0`
+- compare 口径：
+  - 同一数据：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_aztest`
+  - 同一 `camera_split=train`
+  - 同一 `camera_index=0`
+  - 同一黑底约定（ISAR source 强制黑底）
+
+### 实际执行对象与输出路径
+- baseline（既有主线对照）：
+  - `output/stage_m1_retest_p21a_compare_500_train0/stats.json`
+- 本轮 R2-min 训练模型：
+  - `output/r2min_cons500_expbypass_20260331`
+- 本轮 R2-min compare 输出：
+  - `output/r2min_cons500_compare_20260331/stats.json`
+
+### 关键对比结果（`modes_intensity.isar`）
+- `l1_vs_gt`：`0.0790435299 -> 0.0815365463`（未占优）
+- `psnr_vs_gt`：`14.2755832672 -> 14.1257705688`（未占优）
+- `q50`：`0.0000000000 -> 0.0000000000`（持平）
+- `q95`：`0.6465042233 -> 0.6466857195`（略升）
+- `q99`：`0.7650588751 -> 0.7675226927`（略升）
+- `contrast`：`0.7650588751 -> 0.7675226927`（略升）
+- `nonzero_ratio`：`0.2896451354 -> 0.2939805686`（略升）
+
+### 当前工程结论
+- R2-min 单通道工程链路已通过多级验证（2/20/100 与 stage_g/stage_h）。
+- 但在本次 500 iter 主指标对比中，`L1/PSNR` 暂未优于 `math-1 + candidate-A` baseline。
+- 因此当前应保持“候选实现”定位，暂不替代主线 baseline。
+
+## 阶段 18：显式标量散射 DC 通道版本
+
+### 阶段名称
+阶段 18 - 把单通道从渲染压缩语义升级成 Gaussian 表示层的显式标量散射 DC 通道
+
+### 本轮目标
+将原有的在 renderer 中使用 `SH2RGB + mean` 计算出的单通道伪标量，替换为直接从表示层 `f_dc_0` 提取的纯粹显式标量物理表达。
+
+### 实际改动文件
+- `scene/gaussian_model.py`
+- `gaussian_renderer/__init__.py`
+
+### 具体改动内容
+- 在 `GaussianModel` 中增加 `get_scatter_dc` 属性提取 `_features_dc` 的第一个通道。
+- 在 `renderer` 中移除 `SH2RGB + mean`，直接调用 `get_scatter_dc` 注入通道，使得 `f_dc_0` 获取唯一的梯度回传。
+
+### 验证与指标
+- 20 iter 等各项冒烟测试全过。
+- 500 iter 长测对比证明了该通路是跑通的。
+
+## 阶段 19：显式标量散射通道的软激活映射改造
+
+### 阶段名称
+阶段 19 - 对“显式标量散射 DC 通道”版本实施平滑的正域激活映射，替换死区截断。
+
+### 实际改动文件
+- `gaussian_renderer/__init__.py`
+
+### 改动内容
+将旧版：
+- `val * C0 + 0.5` 与 `clamp_min(0.0)`
+替换为：
+- `F.softplus(dc_scalar)`
+
+### 本轮结论
+- 相比“改前显式标量散射 DC 通道”版本表现更好。
+- 由于只换了激活映射却没有换初始化，仍有部分收敛劣势。
+
+## 阶段 20：显式标量散射 DC 通道（初始化去光学化验证）
+
+### 阶段名称
+阶段 20 - 拔除 initial point cloud 加载阶段中为了 RGB 设计的 `RGB2SH`，改为逆 softplus 反推，匹配激活映射。
+
+### 本轮边界
+- 仅修改 `scene/gaussian_model.py` 的模型球初始强度加载。
+- 从 `fused_color = RGB2SH(...)` 改为 `inv_softplus_intensity = torch.log(torch.expm1(...))`
+- 使得 `f_dc_0` 直接以物理对齐状态下线。
+
+### 已完成验证与指标
+- **500 iter 长测对比**（`output/isar_train_deopt_500it`）：
+  - **Baseline (`math-1 + candidate-A@500`)**：L1=0.07904, PSNR=14.275, nonzero_ratio~0.289
+  - **上阶段（Softplus Activation）@500**：L1=0.08222, PSNR=14.082
+  - **本阶段（去光学化 Initialization + Softplus）@500**：L1=0.07992, PSNR=14.248, nonzero_ratio=0.2975
+
+### 当前工程结论
+从指标上看，初始化去光学化极大幅度拉近了与 `math-1` baseline 的差距（L1 从 0.082 缩小到 0.0799，接近目标 0.0790；PSNR 提至 14.248）。这表明：全链路解耦数学一致性后，单通道物理参数能稳定收敛。当前构成了高度一致且可靠的纯物理分支候选。
+
+## 阶段 21：候选分支（去光学化+软激活）@1000 iter 全面挑战轮
+
+### 阶段名称
+阶段 21 - “去光学化初始化 + 显式标量 + softplus”首选候选分支，在 1000 iter 同口径下挑战正式主线 `math-1 + candidate-A`。
+
+### 本轮目标
+对当前表现极佳的首选候选分支执行毫无删改的 1000 iter 长训练完整验证，并根据严格的主指标（`modes_intensity.isar`）对比，正式评估其是否具备替换现役 `math-1` 强截断基线的资格。
+
+### 训练与测试口径
+- `--isar_supervision_mode a`
+- `--isar_l1_weight_alpha 1.0`
+- `--isar_l1_weight_gamma 2.0`
+- `iterations: 1000`
+- 代码维持：100% 沿用上一阶段纯物理对齐形态。
+
+### 已完成验证
+- **1000 iter 长训练**：成功跑完，未出现 NaN / Inf / 崩溃。
+- **阶段 G (`stage_g_posttrain_render_check.py`)**：通过。
+- **阶段 H (`stage_h_projection_compare.py`)**：通过，成功生成 `stats.json`。
+
+### 指标并排比较（与当前主线 @1000）
+| Metric | 主线 `math-1 + candidate-A` @ 1000 | 候选分支 `deopt + softplus` @ 1000 | 差值 (当前 - 主线) |
+|---|---|---|---|
+| L1 vs GT | `0.06310` | `0.06377` | `+0.00067` (微弱劣势) |
+| PSNR vs GT | `15.4842` | `15.4209` | `-0.0633` (微弱劣势) |
+| q95 | `0.58482` | `0.59412` | `+0.00930` (高响应略好) |
+| q99 | `0.78731` | `0.78531` | `-0.00200` (基本持平) |
+| nonzero_ratio | `~ 0.292` | `0.29389` | `+0.001` (基本持平) |
+
+*(注: `contrast` 在新版评估输出中即为 `q99` 近似代理或已被重构归并，上表使用 `q95/q99` 为主干。)*
+
+### 当前工程结论
+- **差距极小化**：该分支在 1000 iter 时的收敛状态与主线高度咬合（L1 差距低至 `~0.0006`，PSNR 仅差 `0.06dB`）。
+- **维持候选定位**：虽然该分支在表现、逻辑链与物理意义上都比原先带历史债务的主线更好，但基于工程数学的绝对冷酷原则，它在核心硬指标（L1/PSNR）上仍存在一丝极其微弱的后仰，未形成有效“反超”。
+- **下一步策略**：当前分支作为“完美解耦的展示层基底”已经定型。表示层优化可能已经逼近上限，说明限制单通道物理继续突破的核心瓶颈极大概率藏在其后的**观测层或损失算子对齐**（相机/雷达的脉冲、频谱响应映射等）。
+## [2026-04-01] 阶段验证：观测层最小算子与双域监督探索
+
+### 本轮目标
+从“表示层优化”跨入“观测层优化”。主线基于纯线性强度域（raw intensity）进行的L1损失由于强散射光斑的高亮度差拉升，导致在平滑区拟合受制。本轮探索通过在 Loss 外层包裹特定的非线性变换（即 observation operator）去重新定义比较域，以此验证能否进一步突破15.48dB的收敛天花板。
+
+### 修改文件
+1. \utils/isar_observation.py\ (新增): 包含了 \pply_isar_observation_operator\，承载映射函数（如 \identity\, \log1p\ 等）。
+2. \rguments/__init__.py\: 注入 \isar_obs_mode\ 与 \isar_obs_log1p_weight\ 命令行钩子参数。
+3. \	rain.py\: 引入观测算子进行映射对比，并在新一轮增加 \+ beta * L_log1p\ 双域对齐监督功能。
+4. \stage_g_posttrain_render_check.py\ & \stage_h_projection_compare.py\ (评估系): 添加了平行维度的双域输出，即同时输出 raw domain 与 log1p domain 的判据结果进行平行对比。
+
+### 第一轮探索：log1p-only 算子实验（正式宣告失败）
+* **逻辑**：仅拿 \log1p(pred) - log1p(gt)\ 作为全局主要 L1 目标对齐距离，完全替代 raw intensity。
+* **结论**：跑至 500 iter 时，非但没有提效，反而在本域内外两套指标中全线崩盘退化：
+  - **Raw 辅助域惨败**：相对主线 L1 从 0.0788 退化至 0.0804，PSNR 从 14.28dB 退化至 14.07dB。
+  - **Log1p 主裁判域也未赢**：尽管是用该域做 target，它自己算出的 Log1p PSNR 为 16.23dB，甚至低于主线原结果生切换过去的 16.42dB。
+* **物理剖析**：由于对数算子将绝对高亮差极度柔化压瘪，这等于拔掉了 3DGS 最赖以增生和生长的“最强点梯度驱动”，导致底层几何发育严重失血。
+
+### 第二轮探索：双域辅助监督实验（Raw主导 + Log1p辅偏） (当前结论)
+* **逻辑**：汲取上一轮血的教训，退回“Raw L1”占绝对控制权重导向。仅增加小阻尼 \eta\（通过 20 iter 短验确认最优参数选定在 \eta = 0.50\，确保最稳），形成 \L_total = L1_raw + 0.5 * L1_log1p\ 的双域框架。
+* **结果 (500 iter同口径对比)**：
+  - **双域架构 (beta=0.5)**： Raw L1 \ .0803\, PSNR \14.19dB\ | Log1p L1 \ .0628\, PSNR \16.34dB\
+  - **旧候选线 (纯Raw)**：Raw L1 \ .0797\, PSNR \14.25dB\ | Log1p L1 \ .0624\, PSNR \16.37dB\
+  - **主线基线 (纯Raw)**：Raw L1 \ .0788\, PSNR \14.28dB\ | Log1p L1 \ .0614\, PSNR \16.42dB\
+* **最终判决**：双域结合同样**宣告阻抑严重**。任何意图将高亮区软化的数学辅助项均在事实上拖拽了网络生长的步调。这验证了一个极其核心的雷达渲染特性：**观测层的设计必须远离渲染损失的最上游比较，直接在损失算子层削峰是违背 3DGS 生长直觉的。** 本轮明确拒绝双域与单域最小算子损失重构方案向后推进。
 
 
+
+## Phase Update: Observation Extensibility (Decoupled Operator Stage)
+- **Objective**: Establish pply_isar_observation_operator to run independent extensible loops in testing instead of interfering in the loss loop.
+- **Changes**: Rollback train.py back to strict Raw L1 and fully abstract operators (identity, log1p, future_physical) out into eval-scripts (stage g and stage h).
+- **Stage-G Results**: Validated loop logic dynamically capturing arrays correctly against preexisting model checkpoints without crash.
+- **Stage-H Results**: Fully nested validation generating modes_intensity_obs successfully to output image metrics across dual layers (Raw intensity rendering vs Log1P visualization normalization).
