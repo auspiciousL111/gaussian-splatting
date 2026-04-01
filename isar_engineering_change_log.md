@@ -1343,3 +1343,62 @@ aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \d
 - 当前正式训练主线回正为：`math-1 + candidate-A`。
 - `deopt + softplus`（current/candidate）保留为研究分支，不作为训练主线。
 
+
+## [2026-04-01] 阶段 23：Single-Channel Scattering Closure V1（research branch only）
+
+### 分支与边界
+- 执行分支：`research/deopt-softplus-obsctx`。
+- 本轮不碰正式主线，不做 `math2 / math3`，不改 CUDA 几何数学。
+
+### 本轮目标
+- 在研究分支上把监督、导出、统计优先统一到 1 通道强度语义。
+- 保留 `raw / log1p / db_radar` observation 接口，不扩展真实成像算子。
+
+### 实际改动文件
+- `utils/isar_observation.py`
+- `gaussian_renderer/__init__.py`
+- `train.py`
+- `stage_g_posttrain_render_check.py`
+- `stage_h_projection_compare.py`
+
+### 关键实现
+1) 统一强度转换函数
+- 在 `utils/isar_observation.py` 新增 `to_isar_intensity(...)`，用于将 `(C,H,W)` 统一为 `1xHxW` 强度图。
+
+2) renderer 输出补充 intensity 通道
+- 在 `gaussian_renderer/__init__.py` 保留 `render`（兼容外部接口），新增 `intensity` 字段作为单通道主语义。
+
+3) 训练监督改为单通道主路径
+- 在 `train.py` 移除对单通道 GT 的 `repeat(3,1,1)` 临时兼容。
+- 当 GT 为 1 通道时，loss/ssim 直接在 `to_isar_intensity(render)` 与 GT 之间计算。
+- `training_report` 的 eval 指标也同步到单通道对齐路径。
+
+4) stage_g / stage_h 改为 intensity-first
+- `stage_g_posttrain_render_check.py` 的 raw 输入改为单通道 intensity。
+- `stage_h_projection_compare.py` 的统计与 observation 对比改为 intensity-first；`render_*.png` 仅保留最小 RGB 可视化兼容。
+
+### 最小验证
+- 导入检查：PASS。
+- 20 iter smoke：PASS。
+  - 模型：`output/research_sc_v1_smoke20`
+  - stage_g：`output/research_sc_v1_smoke20/stage_g_observation_context_iter20.json`（PASS）
+  - stage_h：`output/research_sc_v1_smoke20_compare/stats.json`（finite）
+- 100 iter：PASS。
+  - 模型：`output/research_sc_v1_100`
+  - stage_g：`output/research_sc_v1_100/stage_g_observation_context_iter100.json`（PASS）
+  - stage_h：`output/research_sc_v1_100_compare/stats.json`（finite）
+
+### 关键证据
+- stage_g raw shape：
+  - 20 iter：`1x1200x1200`
+  - 100 iter：`1x1200x1200`
+- stage_h `modes_intensity.isar.shape`：
+  - 20 iter：`1x1200x1200`
+  - 100 iter：`1x1200x1200`
+- 本轮未出现 NaN / Inf / 崩溃。
+
+### 本轮结论
+- Single-Channel Scattering Closure V1 在研究分支成立。
+- RGB 残留已收敛到最小兼容位置（viewer/可视化输出），主监督与主统计已切换到 1 通道强度语义。
+- 该形态更适合作为后续真实 ISAR observation/operator 挂载基座。
+

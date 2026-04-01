@@ -1315,3 +1315,49 @@ $$
 - 正式训练主线：`math-1 + candidate-A`。
 - 研究分支：`deopt + softplus`（current/candidate）继续用于观测层与表示层研究，不作为正式训练主线。
 
+
+## 34. Single-Channel Scattering Closure V1（research branch）
+
+本节目标是在不改几何数学、不改主线 loss 的前提下，将训练与评估语义从“RGB 兼容优先”收束到“单通道强度优先”。
+
+### 34.1 语义闭环定义
+
+设渲染输出为 $R\in\mathbb{R}^{C\times H\times W}$，定义强度映射
+
+$$
+\mathcal{I}(R)=
+\begin{cases}
+R, & C=1\\
+\sum_{c=1}^{3} w_c R_c, & C\ge 3
+\end{cases}
+$$
+
+其中 $(w_1,w_2,w_3)=(0.299,0.587,0.114)$。
+
+然后监督与统计统一在
+
+$$
+I_{pred}=\mathcal{I}(R),\quad I_{gt}\in\mathbb{R}^{1\times H\times W}
+$$
+
+上执行。
+
+### 34.2 本轮具体落实
+
+- renderer 继续输出 `render`（兼容），同时显式输出 `intensity=\mathcal{I}(render)`。
+- 训练中当 GT 为单通道时，loss 与 ssim 直接作用于 `intensity` 与 GT，不再做 `GT.repeat(3,1,1)`。
+- stage_g / stage_h 的主统计、observation 输入统一为单通道 intensity。
+
+### 34.3 验证结论（20/100 iter）
+
+- 20 iter 与 100 iter 训练均稳定完成。
+- stage_g 与 stage_h 均 finite，且无 NaN / Inf / 崩溃。
+- 关键形状证据：
+  - stage_g `raw.shape = 1x1200x1200`（20/100 均一致）
+  - stage_h `modes_intensity.isar.shape = 1x1200x1200`（20/100 均一致）
+
+### 34.4 对后续研究的意义
+
+- 该闭环显著减少了“先 RGB 再灰度”的语义绕路，使 observation/operator 的输入语义更直接。
+- 在保持主线冻结的条件下，V1 已可作为 research 分支后续真实 ISAR observation/operator 原型挂载的基础层。
+

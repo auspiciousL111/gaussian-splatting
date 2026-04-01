@@ -13,6 +13,7 @@ import os
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim
+from utils.isar_observation import to_isar_intensity
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -123,28 +124,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        # Temporary smoke-test compatibility patch:
-        # If ISAR GT is single-channel (1xHxW), expand to 3xHxW so that
-        # current RGB-oriented loss/render path can run for short validation.
-        # This does not mean final ISAR training should be modeled as 3-channel.
+        pred_image = image
+
+        # Single-channel ISAR supervision path: keep loss in intensity domain.
         if gt_image.dim() == 3 and gt_image.shape[0] == 1:
-            gt_image = gt_image.repeat(3, 1, 1)
+            pred_image = to_isar_intensity(image)
+        elif image.dim() == 3 and image.shape[0] == 1 and gt_image.dim() == 3 and gt_image.shape[0] >= 3:
+            gt_image = to_isar_intensity(gt_image)
 
         supervision_mode = str(getattr(opt, "isar_supervision_mode", "mainline")).strip().lower()
         if supervision_mode in {"a", "candidate-a", "candidate_a"}:
             Ll1 = isar_candidate_a_l1_loss(
-                image,
+                pred_image,
                 gt_image,
                 getattr(opt, "isar_l1_weight_alpha", 1.0),
                 getattr(opt, "isar_l1_weight_gamma", 2.0),
             )
         else:
-            Ll1 = l1_loss(image, gt_image)
+            Ll1 = l1_loss(pred_image, gt_image)
 
         if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            ssim_value = fused_ssim(pred_image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
-            ssim_value = ssim(image, gt_image)
+            ssim_value = ssim(pred_image, gt_image)
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
@@ -253,15 +255,23 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 for idx, viewpoint in enumerate(config['cameras']):
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+
+                    eval_image = image
+                    eval_gt = gt_image
+                    if gt_image.dim() == 3 and gt_image.shape[0] == 1:
+                        eval_image = to_isar_intensity(image)
+                    elif image.dim() == 3 and image.shape[0] == 1 and gt_image.dim() == 3 and gt_image.shape[0] >= 3:
+                        eval_gt = to_isar_intensity(gt_image)
+
                     if train_test_exp:
-                        image = image[..., image.shape[-1] // 2:]
-                        gt_image = gt_image[..., gt_image.shape[-1] // 2:]
+                        eval_image = eval_image[..., eval_image.shape[-1] // 2:]
+                        eval_gt = eval_gt[..., eval_gt.shape[-1] // 2:]
                     if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), eval_image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
+                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), eval_gt[None], global_step=iteration)
+                    l1_test += l1_loss(eval_image, eval_gt).mean().double()
+                    psnr_test += psnr(eval_image, eval_gt).mean().double()
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))

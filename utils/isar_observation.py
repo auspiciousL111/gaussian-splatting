@@ -41,6 +41,22 @@ _MODE_CONTEXT_DEFAULTS = {
 }
 
 
+def to_isar_intensity(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Convert image-like tensors to a single-channel ISAR intensity map (1xHxW).
+    """
+    if tensor.dim() == 2:
+        return tensor.unsqueeze(0)
+    if tensor.dim() != 3:
+        raise ValueError(f"Expected tensor with shape (C,H,W) or (H,W), got {tuple(tensor.shape)}")
+    if tensor.shape[0] == 1:
+        return tensor
+    if tensor.shape[0] >= 3:
+        weights = torch.tensor([0.299, 0.587, 0.114], dtype=tensor.dtype, device=tensor.device).view(3, 1, 1)
+        return (tensor[:3] * weights).sum(dim=0, keepdim=True)
+    return tensor.mean(dim=0, keepdim=True)
+
+
 def _normalize_mode_name(obs_mode: str) -> str:
     if obs_mode is None:
         raise ValueError("obs_mode cannot be None")

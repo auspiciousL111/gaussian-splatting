@@ -12,6 +12,7 @@ from utils.isar_observation import (
     DEFAULT_ISAR_OBSERVATION_MODES,
     apply_isar_observation_operator,
     build_isar_observation_specs,
+    to_isar_intensity,
 )
 
 
@@ -112,7 +113,7 @@ def main():
 
         with torch.no_grad():
             pkg = render(cam, gaussians, pipeline_params.extract(args), bg)
-            image_raw = pkg["render"]
+            image_raw = to_isar_intensity(pkg.get("intensity", pkg["render"]))
 
         # Stats for raw
         finite_ok = bool(torch.isfinite(image_raw).all().item())

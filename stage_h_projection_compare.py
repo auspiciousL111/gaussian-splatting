@@ -15,24 +15,13 @@ from utils.isar_observation import (
     DEFAULT_ISAR_OBSERVATION_MODES,
     apply_isar_observation_operator,
     build_isar_observation_specs,
+    to_isar_intensity,
 )
 
 
-def to_3ch(img: torch.Tensor) -> torch.Tensor:
-    if img.dim() == 3 and img.shape[0] == 1:
-        return img.repeat(3, 1, 1)
-    return img
-
-
-def to_gray(img: torch.Tensor) -> torch.Tensor:
-    if img.dim() != 3:
-        raise ValueError(f"Expected CHW image tensor, got shape={tuple(img.shape)}")
-    if img.shape[0] == 1:
-        return img
-    if img.shape[0] >= 3:
-        weights = torch.tensor([0.299, 0.587, 0.114], dtype=img.dtype, device=img.device).view(3, 1, 1)
-        return (img[:3] * weights).sum(dim=0, keepdim=True)
-    raise ValueError(f"Unsupported channel count for grayscale conversion: {img.shape[0]}")
+def intensity_to_rgb_vis(img_intensity: torch.Tensor) -> torch.Tensor:
+    intensity = to_isar_intensity(img_intensity)
+    return intensity.repeat(3, 1, 1)
 
 
 def save_tensor_image(path: str, image_chw: torch.Tensor) -> None:
@@ -208,9 +197,9 @@ def main() -> None:
     pipe = pipeline_params.extract(args)
     bg, bg_info = resolve_background(args)
 
-    gt = to_3ch(cam.original_image.cuda())
-    gt_intensity = to_gray(gt)
-    save_tensor_image(os.path.join(args.output_dir, "gt.png"), gt)
+    gt_intensity = to_isar_intensity(cam.original_image.cuda())
+    gt_vis = intensity_to_rgb_vis(gt_intensity)
+    save_tensor_image(os.path.join(args.output_dir, "gt.png"), gt_vis)
     save_tensor_gray_image(os.path.join(args.output_dir, "gt_intensity.png"), gt_intensity)
     obs_specs = build_observation_specs_from_args(args)
 
@@ -249,14 +238,14 @@ def main() -> None:
 
             with torch.no_grad():
                 out = render(cam, gaussians, pipe, bg)
-                img = to_3ch(out["render"])
-                img_intensity = to_gray(img)
+                img_intensity = to_isar_intensity(out.get("intensity", out["render"]))
+                img = intensity_to_rgb_vis(img_intensity)
 
             save_tensor_image(os.path.join(args.output_dir, f"render_{mode}.png"), img)
             save_tensor_gray_image(os.path.join(args.output_dir, f"render_{mode}_intensity.png"), img_intensity)
             mode_images[mode] = img
             mode_intensity_images[mode] = img_intensity
-            results["modes"][mode] = summarize(img, gt)
+            results["modes"][mode] = summarize(img_intensity, gt_intensity)
             results["modes_intensity"][mode] = summarize_intensity(img_intensity, gt_intensity, args.hist_bins)
             
             # Loop over extensible observation operators using unified context-aware specs.
