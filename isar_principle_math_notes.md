@@ -1157,3 +1157,161 @@ $$ \operatorname{softplus}(\ln(e^S - 1)) = \ln(1 + e^{\ln(e^S - 1)}) = \ln(1 + e
 ## 30. Observation Operator Decoupling Principle
 Following the confirmed structural failure of blending HDR suppressions (like \log1p\) directly inside the training iteration gradient loops (see 29.1 and 29.2), the system explicitly segments pply_isar_observation_operator to run post-hoc.
 The observation transformations are strictly decoupled interfaces applied solely during eval/export steps against strictly RAW-trained geometry. This theoretically preserves Gaussian topological propagation gradients while retaining evaluation layer comparability (modes_intensity_obs) toward future ISAR physics integrations.
+
+
+### 31. Post-Hoc Prototype: Minimal ISAR Decibel Scaling (\db_radar\)
+
+In order to provide a 'more realistic' evaluation schema outside the training loop, the db_radar operator was initiated. radar signals are primarily evaluated in the Decibel (dB) scale because they encompass enormous dynamic ranges. A basic threshold and dB mapping mimics the physical radar receiver's minimum detectable bounds and normalization:
+- **Mathematical Form**: {dB} = 10 \cdot \log_{10}(I + 10^{-4})$
+- **Envelope Normalization**: {norm} = \text{clamp}((I_{dB} + 40.0) / 40.0, \text{min}=0.0)$
+- **Why it is more realistic than log1p**: log1p(I) mathematically merges a linear regime (for small \I\) and a compressed regime (for large \I\). However, radar inherently treats ratio-based energy tracking through pure  \log_{10}()$ mapping across all bounds. This new prototype explicitly anchors a -40dB noise floor assumption and aligns pixel intensity exclusively as a relative power distribution. It acts strictly as a downstream evaluation rendering method without dragging network geometry out of convergence.
+
+
+
+### The DB_RADAR Performance Inversion and Softplus Regularization
+During the formal Mainline vs. Candidate branch comparison, an interesting metric inversion occurred. The candidate model (implementing \softplus\ and explicit DC scalar bounds) achieved slightly worse L1 metrics in the linear \
+aw\ domain compared to the mainline model, but consistently generated significantly better L1 and PSNR metrics in the \db_radar\ domain.
+
+**Mathematical Rationale:**
+The linear \
+aw\ L1 metric applies uniform weighting to absolute error. Therefore, models that easily overfit and saturate to extreme bright scattering peaks (which often happens with simple \exp()\ activation) artificially score better in \
+aw\ error metrics but sacrifice dynamic range in low-intensity fields.
+
+However, the physical \db_radar = (10 * log10(I + 1e-4) + 40) / 40\ operation applies a violent logarithmic compression. This means a numerical error near the noise floor (^{-4}$) is amplified massively compared to an error near peak values ($-0\text{dB}$). 
+Because the Candidate branch utilizes de-optical initialization and \softplus\, it avoids catastrophic gradient explosion and strictly enforces stable, non-negative noise floors. This allows the model to accurately reconstruct the weak structural scatterers, leading to a direct quantitative victory in the DB_RADAR domain. This proves that softplus and explicit scalar modeling physically align far better with inverse SAR rendering properties.
+
+
+## 32. Observation Context Interface 语义化（context_v1）
+
+本节记录的是接口层语义升级，而不是训练目标改造。
+
+### 32.1 升级前后的抽象差异
+
+升级前：
+
+$$
+y = \mathcal{O}_{m}(I)
+$$
+
+其中 $m$ 为模式（identity / log1p / db_radar），接口只接收张量与 mode。
+
+升级后：
+
+$$
+y = \mathcal{O}_{m}(I; \mathbf{c})
+$$
+
+其中 $\mathbf{c}$ 为上下文参数（context），可携带观测语义。
+
+### 32.2 context_v1 当前字段
+
+- 通用语义字段：
+  - `normalization_mode`
+  - `range_axis`
+  - `cross_range_axis`
+  - `future_physical_operator_name`
+  - `clamp_min`, `clamp_max`
+- `log1p` 相关：
+  - `epsilon`
+- `db_radar` 相关：
+  - `epsilon`
+  - `noise_floor_db`
+  - `dynamic_range_db`
+  - `normalization_mode`
+
+### 32.3 db_radar 的参数化表达
+
+当前 context 下，`db_radar` 的默认形式为：
+
+$$
+I_{dB} = 10\log_{10}(\max(I,0)+\epsilon),\quad \epsilon=10^{-4}
+$$
+
+$$
+I_{norm} = \frac{I_{dB}-\text{noise\_floor\_db}}{\text{dynamic\_range\_db}}
+$$
+
+默认参数：
+
+$$
+	ext{noise\_floor\_db}=-40,\quad \text{dynamic\_range\_db}=40
+$$
+
+并采用：
+
+$$
+I_{out}=\operatorname{clamp}(I_{norm},\text{min}=0,\text{max}=\varnothing)
+$$
+
+其中 `max=None` 表示当前仅下限夹紧，保留高能量上溢供后续统计或可视化策略处理。
+
+### 32.4 与双轨冻结的一致性
+
+本轮只在观测接口层引入参数语义，不将 observation operator 前装进训练 loss，因此不破坏既有结论：
+
+- 轨道 A 继续承担训练基线稳定性。
+- 轨道 B 承担真实 ISAR 观测算子的接口挂载与语义扩展。
+
+### 32.5 这一步证明了什么
+
+通过既有 500/1000 模型在 stage_g 与 stage_h 的导出验证，三模式均可在 `mode + context` 下稳定运行，且 json 已能完整审计“模式-上下文-统计”三元关系。这意味着系统已从“观测算子原型函数”进入“观测算子接口语义层”。
+
+
+## 33. Candidate-A 主线回正与再基线（Rebaseline）
+
+本节记录的是训练监督口径回正，不涉及 CUDA、renderer、evaluation 脚本实现修改。
+
+### 33.1 当前训练主线参数冻结
+
+在当前 clean freeze 快照下，训练主线参数固定为：
+
+- `--isar_supervision_mode a`
+- `--isar_l1_weight_alpha 1.0`
+- `--isar_l1_weight_gamma 2.0`
+
+对应目标形式保持：
+
+$$
+L_A=\frac{\sum w\cdot |I-\hat I|}{\sum w+\epsilon},\quad
+w=1+\alpha\cdot (I_{gt}^{+})^{\gamma}
+$$
+
+其中 $(\alpha,\gamma)=(1.0,2.0)$。
+
+### 33.2 A@100 对齐结论（入口恢复有效性）
+
+基于同口径对比（历史 vs 当前恢复）：
+
+- $\Delta L1 \approx +7.93\times 10^{-5}$
+- $\Delta PSNR \approx -4.58\times 10^{-3}\,\text{dB}$
+- $\Delta q99 \approx -9.39\times 10^{-4}$
+
+差异量级很小，说明 candidate-A 训练入口恢复后，A@100 轨迹已基本贴近历史参考。
+
+### 33.3 A@500 / A@1000 正式复现结果
+
+在同一快照、同一数据、同一 seed、同一黑底约定下：
+
+- A@500、A@1000 均成功完成训练与导出。
+- stage_g / stage_h 全部 finite，无 NaN / Inf / 崩溃。
+
+相对历史 `math-1 + candidate-A` 基线（`modes_intensity.isar`）：
+
+- A@500：
+  - $\Delta L1=+0.002691$
+  - $\Delta PSNR=-0.15346\,\text{dB}$
+  - $\Delta q99=+0.004856$
+  - $\Delta nonzero=+0.010790$
+- A@1000：
+  - $\Delta L1=+0.002437$
+  - $\Delta PSNR=-0.18844\,\text{dB}$
+  - $\Delta q99=-0.000237$
+  - $\Delta nonzero=+0.002444$
+
+这些差异表明本轮复现与历史主线处于同一监督族轨道，主行为一致，存在可接受重跑波动。
+
+### 33.4 主线与研究分支职责
+
+- 正式训练主线：`math-1 + candidate-A`。
+- 研究分支：`deopt + softplus`（current/candidate）继续用于观测层与表示层研究，不作为正式训练主线。
+

@@ -40,6 +40,12 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+
+def isar_candidate_a_l1_loss(image, gt_image, alpha, gamma, eps=1e-8):
+    gt_positive = torch.clamp_min(gt_image, 0.0)
+    weights = 1.0 + float(alpha) * torch.pow(gt_positive, float(gamma))
+    return torch.sum(weights * torch.abs(image - gt_image)) / (torch.sum(weights) + eps)
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -123,7 +129,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # This does not mean final ISAR training should be modeled as 3-channel.
         if gt_image.dim() == 3 and gt_image.shape[0] == 1:
             gt_image = gt_image.repeat(3, 1, 1)
-        Ll1 = l1_loss(image, gt_image)
+
+        supervision_mode = str(getattr(opt, "isar_supervision_mode", "mainline")).strip().lower()
+        if supervision_mode in {"a", "candidate-a", "candidate_a"}:
+            Ll1 = isar_candidate_a_l1_loss(
+                image,
+                gt_image,
+                getattr(opt, "isar_l1_weight_alpha", 1.0),
+                getattr(opt, "isar_l1_weight_gamma", 2.0),
+            )
+        else:
+            Ll1 = l1_loss(image, gt_image)
+
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:

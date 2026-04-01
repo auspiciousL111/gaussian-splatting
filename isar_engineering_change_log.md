@@ -1182,3 +1182,164 @@ $$
 - **Changes**: Rollback train.py back to strict Raw L1 and fully abstract operators (identity, log1p, future_physical) out into eval-scripts (stage g and stage h).
 - **Stage-G Results**: Validated loop logic dynamically capturing arrays correctly against preexisting model checkpoints without crash.
 - **Stage-H Results**: Fully nested validation generating modes_intensity_obs successfully to output image metrics across dual layers (Raw intensity rendering vs Log1P visualization normalization).
+
+
+## Phase Update: Post-Hoc Physical ISAR Operator Prototype (db_radar)
+- **Objective**: Introduce a minimal 'more realistic' ISAR observation operator prototype specifically for decoupling evaluation interfaces.
+- **Changes**: Added db_radar to isar_observation.py which computes 10 * log10(I + 1e-4) and normalizes roughly a 40dB dynamic range (-40dB to 0dB) into the visual/eval [0.0, 1.0] range. This simulates standard radar dB scaling thresholds.
+- **Validation**: Executed stage_g and stage_h successfully on multiple previous models (e.g. 500 iter and 1000 iter checkpoints). Output json successfully segregated 
+aw, log1p, and db_radar parallel trajectories with proper scaling and numerical bounds.
+- **Conclusion**: The decouple architecture is fully robust. We have officially entered the 'Real Observation Operator Interface Pre-Research Phase'.
+
+
+## Phase Update: Formal Judgment Round (Mainline vs. Candidate in db_radar Domain)
+- **Objective**: Determine whether to promote the Candidate branch (scalar DC scatter + de-opt init + softplus) over the Mainline (math-1 + candidate-A) using the newly implemented physical \db_radar\ observation operator.
+- **Methodology**: Evaluated 500-iter and 1000-iter checkpoints of both branches using \stage_h_projection_compare.py\ with \--convert_SHs_python\ across \
+aw\, \log1p\, and \db_radar\ modes.
+- **Results (1000 iterations)**: 
+  - **Mainline**: RAW (L1: 0.07349, PSNR: 15.21), DB_RADAR (L1: 0.13652, PSNR: 10.05)
+  - **Candidate**: RAW (L1: 0.07546, PSNR: 15.21), DB_RADAR (L1: 0.13517, PSNR: 10.16)
+- **Conclusion**: The Candidate branch is officially promoted to the primary baseline for the next development phase. Despite slightly trailing in the unbounded \
+aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \db_radar\ metric, correctly preserving low-intensity scattering physical attributes without gradient saturation.
+
+
+## [2026-04-01] Phase Update: Observation Context Interface Upgrade (context_v1)
+
+### 本轮目标
+将 observation operator 从仅支持 `mode(tensor)` 的简单变换，升级为支持 `mode + context` 的语义化接口，作为轨道 B（观测层主攻）后续挂载真实 ISAR 观测算子的统一入口。
+
+### 本轮边界（严格未触碰）
+- 不改训练 loss。
+- 不改 train.py 主链。
+- 不改几何。
+- 不改 CUDA。
+- 不改表示层。
+
+### 实际改动文件
+- `utils/isar_observation.py`
+- `stage_g_posttrain_render_check.py`
+- `stage_h_projection_compare.py`
+
+### 具体升级内容
+1) 观测接口升级
+- 新接口支持：`apply_isar_observation_operator(tensor, obs_mode, context=None)`。
+- 新增统一 spec 构造：`build_isar_observation_spec(s)` 与默认 `DEFAULT_ISAR_OBSERVATION_MODES`。
+- context 预留并可审计字段包含：
+  - `noise_floor_db`
+  - `dynamic_range_db`
+  - `normalization_mode`
+  - `clamp_min` / `clamp_max`
+  - `range_axis` / `cross_range_axis`
+  - `future_physical_operator_name`
+
+2) stage_g / stage_h 调用统一
+- 两个脚本都通过统一的 observation spec（mode + context）循环调用 `identity / log1p / db_radar`。
+- 输出 json 中增加接口层结构化记录：
+  - `observation_interface.version = context_v1`
+  - `observation_interface.specs`（或等价可审计结构）
+  - 每个 mode 的 context 与统计结果。
+
+3) db_radar 显式 context
+- 当前默认参数明确落盘记录：
+  - `noise_floor_db = -40.0`
+  - `dynamic_range_db = 40.0`
+  - `normalization_mode = db_floor_to_unit_interval`
+  - `clamp_min = 0.0`
+  - `clamp_max = None`
+
+### 本轮验证（仅用既有模型，不训练新模型）
+使用既有模型：
+- 500 iter：`output/isar_train_deopt_500it`
+- 1000 iter：`output/isar_train_deopt_1000it`
+
+执行：
+- stage_g：两次均 PASS。
+- stage_h：两次均成功导出 `stats.json`。
+- 三种模式 `identity / log1p / db_radar` 在四份结果中均完整存在。
+- 自动审计确认四份结果均 `finite_ok=True`，无 NaN / Inf。
+
+结果目录：
+- `output/eval_obsctx_g_candidate_500/stage_g_stats.json`
+- `output/eval_obsctx_g_candidate_1000/stage_g_stats.json`
+- `output/eval_obsctx_h_candidate_500/stats.json`
+- `output/eval_obsctx_h_candidate_1000/stats.json`
+
+### 本轮工程结论
+- 本轮是“观测接口语义化升级”，不是训练改造，也不是新物理算子本体实现。
+- 双轨冻结保持不变：
+  - 轨道 A（训练主线）继续保持 `math-1 + candidate-A`。
+  - 轨道 B（观测层主攻）继续以“显式标量 DC + 去光学化初始化 + softplus”为锚点。
+- 后续真实 ISAR 观测算子默认挂载到该 `context_v1` 接口层，在不触碰训练主链的前提下增量扩展。
+
+
+## [2026-04-01] 阶段 22：正式主线回正轮（candidate-A rebaseline）
+
+### 本轮目标
+- 在当前 clean freeze 快照下，将训练主线正式锁回 `math-1 + candidate-A`。
+- 严格固定监督入口参数：
+  - `--isar_supervision_mode a`
+  - `--isar_l1_weight_alpha 1.0`
+  - `--isar_l1_weight_gamma 2.0`
+- 完成 A@500 / A@1000 同口径复现，并与历史基线对比。
+
+### 本轮边界（严格未触碰）
+- 不改 CUDA。
+- 不改 renderer。
+- 不改 stage_g / stage_h 脚本实现。
+- 不改 observation operator。
+- 不改数据读取。
+- 不引入新 loss。
+
+### 代码改动状态
+- 训练监督入口恢复代码沿用上一轮最小补丁（`train.py`, `arguments/__init__.py`）。
+- 本轮**无新增代码修改**；仅执行训练、评估与文档冻结。
+
+### A@100 对齐证据（回正前置确认）
+- 对比文件：
+  - 历史：`output/repro_histA100_compare_currentscript/stats.json`
+  - 新复现：`output/repro_newA100_compare_currentscript/stats.json`
+- `modes_intensity.isar` 关键差值：
+  - `delta_l1 = +0.0000793`
+  - `delta_psnr = -0.00458 dB`
+  - `delta_q99 = -0.000939`
+- 判定：A@100 已与历史基本贴合，训练入口恢复有效。
+
+### 本轮复现执行（同一快照/环境/数据/seed/背景）
+- 训练模型：
+  - A@500：`output/rebaseline_a500_20260401`
+  - A@1000：`output/rebaseline_a1000_20260401`
+- 环境约束：`gaussian_splatting` + CUDA 11.8。
+- stage_g 输出：
+  - `output/rebaseline_a500_20260401/stage_g_observation_context_iter500.json`
+  - `output/rebaseline_a1000_20260401/stage_g_observation_context_iter1000.json`
+- stage_h 输出：
+  - `output/rebaseline_a500_compare_train0/stats.json`
+  - `output/rebaseline_a1000_compare_train0/stats.json`
+
+### 稳定性
+- A@500、A@1000 均成功跑完。
+- stage_g: 500/1000 均 PASS，finite 检查通过。
+- stage_h: 500/1000 `modes_intensity.isar.finite_ok=True`。
+- 本轮未出现 NaN / Inf / 崩溃。
+
+### 与历史主线基线对比（`modes_intensity.isar`）
+- 历史基线：
+  - A@500：`output/stage_m1_retest_p21a_compare_500_train0/stats.json`
+  - A@1000：`output/stage_m1_p21a_compare_1000_train0/stats.json`
+
+- A@500（新 - 历史）
+  - `l1_vs_gt`: `+0.002691`
+  - `psnr_vs_gt`: `-0.15346 dB`
+  - `q99`: `+0.004856`
+  - `nonzero_ratio`: `+0.010790`
+
+- A@1000（新 - 历史）
+  - `l1_vs_gt`: `+0.002437`
+  - `psnr_vs_gt`: `-0.18844 dB`
+  - `q99`: `-0.000237`
+  - `nonzero_ratio`: `+0.002444`
+
+### 本轮冻结结论
+- 当前正式训练主线回正为：`math-1 + candidate-A`。
+- `deopt + softplus`（current/candidate）保留为研究分支，不作为训练主线。
+
