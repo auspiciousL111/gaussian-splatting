@@ -148,6 +148,21 @@ def build_observation_specs_from_args(args) -> list[dict]:
                 "clamp_max": getattr(args, "obs_clamp_max", None),
             }
         )
+    if "db_cfar" in context_overrides:
+        context_overrides["db_cfar"].update(
+            {
+                "epsilon": getattr(args, "obs_cfar_epsilon", 1e-4),
+                "nonzero_threshold": getattr(args, "obs_cfar_nonzero_threshold", 1e-6),
+                "q_low": getattr(args, "obs_cfar_q_low", 0.2),
+                "q_high": getattr(args, "obs_cfar_q_high", 0.995),
+                "min_points": getattr(args, "obs_cfar_min_points", 64),
+                "fallback_noise_floor_db": getattr(args, "obs_cfar_fallback_noise_floor_db", -40.0),
+                "fallback_dynamic_range_db": getattr(args, "obs_cfar_fallback_dynamic_range_db", 40.0),
+                "normalization_mode": getattr(args, "obs_cfar_normalization_mode", "nonzero_percentile_window"),
+                "clamp_min": getattr(args, "obs_cfar_clamp_min", 0.0),
+                "clamp_max": getattr(args, "obs_cfar_clamp_max", 1.0),
+            }
+        )
     return build_isar_observation_specs(modes, context_overrides)
 
 
@@ -180,6 +195,16 @@ def main() -> None:
     parser.add_argument("--obs_range_axis", type=str, default=None)
     parser.add_argument("--obs_cross_range_axis", type=str, default=None)
     parser.add_argument("--obs_future_physical_operator_name", type=str, default=None)
+    parser.add_argument("--obs_cfar_epsilon", type=float, default=1e-4)
+    parser.add_argument("--obs_cfar_nonzero_threshold", type=float, default=1e-6)
+    parser.add_argument("--obs_cfar_q_low", type=float, default=0.2)
+    parser.add_argument("--obs_cfar_q_high", type=float, default=0.995)
+    parser.add_argument("--obs_cfar_min_points", type=int, default=64)
+    parser.add_argument("--obs_cfar_fallback_noise_floor_db", type=float, default=-40.0)
+    parser.add_argument("--obs_cfar_fallback_dynamic_range_db", type=float, default=40.0)
+    parser.add_argument("--obs_cfar_normalization_mode", type=str, default="nonzero_percentile_window")
+    parser.add_argument("--obs_cfar_clamp_min", type=float, default=0.0)
+    parser.add_argument("--obs_cfar_clamp_max", type=float, default=1.0)
     args = get_combined_args(parser)
 
     os.makedirs(args.output_dir, exist_ok=True)

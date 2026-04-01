@@ -7,7 +7,7 @@ import torch
 
 
 # Default export/evaluation modes for ISAR observation comparison.
-DEFAULT_ISAR_OBSERVATION_MODES = ("identity", "log1p", "db_radar")
+DEFAULT_ISAR_OBSERVATION_MODES = ("identity", "log1p", "db_radar", "db_cfar")
 
 
 _COMMON_CONTEXT_DEFAULTS = {
@@ -33,6 +33,19 @@ _MODE_CONTEXT_DEFAULTS = {
         "normalization_mode": "db_floor_to_unit_interval",
         "clamp_min": 0.0,
         "clamp_max": None,
+    },
+    # ISAR-oriented prototype: adaptive dB window on nonzero scattering pixels.
+    "db_cfar": {
+        "epsilon": 1e-4,
+        "nonzero_threshold": 1e-6,
+        "q_low": 0.2,
+        "q_high": 0.995,
+        "min_points": 64,
+        "fallback_noise_floor_db": -40.0,
+        "fallback_dynamic_range_db": 40.0,
+        "normalization_mode": "nonzero_percentile_window",
+        "clamp_min": 0.0,
+        "clamp_max": 1.0,
     },
     # Placeholder mode for forward compatibility when external physical operator arrives.
     "future_physical_operator": {
@@ -117,6 +130,36 @@ def resolve_isar_observation_context(obs_mode: str, context: Mapping[str, Any] |
         resolved["dynamic_range_db"] = dynamic_range_db
         resolved["epsilon"] = epsilon
 
+    if mode == "db_cfar":
+        epsilon = float(resolved.get("epsilon", 1e-4))
+        nonzero_threshold = float(resolved.get("nonzero_threshold", 1e-6))
+        q_low = float(resolved.get("q_low", 0.2))
+        q_high = float(resolved.get("q_high", 0.995))
+        min_points = int(resolved.get("min_points", 64))
+        fallback_noise_floor_db = float(resolved.get("fallback_noise_floor_db", -40.0))
+        fallback_dynamic_range_db = float(resolved.get("fallback_dynamic_range_db", 40.0))
+
+        if epsilon <= 0.0:
+            raise ValueError(f"db_cfar epsilon must be > 0, got {epsilon}")
+        if nonzero_threshold < 0.0:
+            raise ValueError(f"db_cfar nonzero_threshold must be >= 0, got {nonzero_threshold}")
+        if not (0.0 <= q_low < q_high <= 1.0):
+            raise ValueError(f"db_cfar quantiles must satisfy 0 <= q_low < q_high <= 1, got {q_low}, {q_high}")
+        if min_points <= 1:
+            raise ValueError(f"db_cfar min_points must be > 1, got {min_points}")
+        if fallback_dynamic_range_db <= 0.0:
+            raise ValueError(
+                f"db_cfar fallback_dynamic_range_db must be > 0, got {fallback_dynamic_range_db}"
+            )
+
+        resolved["epsilon"] = epsilon
+        resolved["nonzero_threshold"] = nonzero_threshold
+        resolved["q_low"] = q_low
+        resolved["q_high"] = q_high
+        resolved["min_points"] = min_points
+        resolved["fallback_noise_floor_db"] = fallback_noise_floor_db
+        resolved["fallback_dynamic_range_db"] = fallback_dynamic_range_db
+
     resolved["clamp_min"] = _with_numeric_or_none(resolved.get("clamp_min"))
     resolved["clamp_max"] = _with_numeric_or_none(resolved.get("clamp_max"))
 
@@ -188,6 +231,42 @@ def apply_isar_observation_operator(
             )
         return _apply_optional_clamp(normalized, resolved)
 
+    if mode == "db_cfar":
+        epsilon = float(resolved["epsilon"])
+        nonzero_threshold = float(resolved["nonzero_threshold"])
+        q_low = float(resolved["q_low"])
+        q_high = float(resolved["q_high"])
+        min_points = int(resolved["min_points"])
+        fallback_noise_floor_db = float(resolved["fallback_noise_floor_db"])
+        fallback_dynamic_range_db = float(resolved["fallback_dynamic_range_db"])
+        normalization_mode = str(resolved.get("normalization_mode", "nonzero_percentile_window"))
+
+        if normalization_mode != "nonzero_percentile_window":
+            raise ValueError(
+                f"Unsupported db_cfar normalization_mode: {normalization_mode}. "
+                "Supported: nonzero_percentile_window"
+            )
+
+        intensity = torch.clamp_min(tensor, 0.0)
+        db = 10.0 * torch.log10(intensity + epsilon)
+
+        flat_intensity = intensity.reshape(-1)
+        flat_db = db.reshape(-1)
+        positive_mask = flat_intensity > nonzero_threshold
+        positive_count = int(positive_mask.sum().item())
+
+        if positive_count >= min_points:
+            db_positive = flat_db[positive_mask]
+            low_db = torch.quantile(db_positive, q_low)
+            high_db = torch.quantile(db_positive, q_high)
+        else:
+            low_db = torch.tensor(fallback_noise_floor_db, dtype=db.dtype, device=db.device)
+            high_db = low_db + fallback_dynamic_range_db
+
+        window = torch.clamp(high_db - low_db, min=1e-6)
+        normalized = (db - low_db) / window
+        return _apply_optional_clamp(normalized, resolved)
+
     raise ValueError(f"Unknown isar_obs_mode: {obs_mode}")
 
 
@@ -228,5 +307,10 @@ def inverse_isar_observation_operator(
 
         restored = torch.pow(10.0, db / 10.0) - epsilon
         return torch.clamp_min(restored, 0.0)
+
+    if mode == "db_cfar":
+        raise NotImplementedError(
+            "db_cfar inverse is undefined without per-image percentile anchors; use forward mode for post-hoc analysis only."
+        )
 
     raise ValueError(f"Unknown isar_obs_mode: {obs_mode}")

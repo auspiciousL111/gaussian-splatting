@@ -1402,3 +1402,70 @@ aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \d
 - RGB 残留已收敛到最小兼容位置（viewer/可视化输出），主监督与主统计已切换到 1 通道强度语义。
 - 该形态更适合作为后续真实 ISAR observation/operator 挂载基座。
 
+
+## [2026-04-01] 阶段 24：Post-hoc 真实 observation/operator 原型 V1（research only）
+
+### 本轮边界
+- 分支：`research/deopt-softplus-obsctx`
+- 不改训练主链，不改 CUDA，不改几何 math，不做长训。
+- 仅在 observation/evaluation/export 接口层新增原型 mode。
+
+### 只读审查结论（identity / log1p / db_radar）
+- `identity`：保持原强度，语义最直接，但动态范围过大，弱散射可读性低。
+- `log1p`：压缩平滑，但缺少雷达 dB 语义，亮弱比解释性不足。
+- `db_radar`：具备 dB 语义，但固定噪声底与固定动态范围，对不同样本自适应能力弱。
+
+### 新增 mode
+- 新增 `db_cfar`（post-hoc only）。
+- 实现文件：
+  - `utils/isar_observation.py`
+  - `stage_g_posttrain_render_check.py`
+  - `stage_h_projection_compare.py`
+
+### 数学定义（db_cfar）
+给定单通道强度图 $I\ge 0$：
+
+$$
+D = 10\log_{10}(I+\epsilon)
+$$
+
+设非零掩码 $\Omega = \{p\mid I(p)>\tau\}$，在 $D(\Omega)$ 上取分位锚点：
+
+$$
+D_{low}=Q_{q_{low}}(D(\Omega)),\quad D_{high}=Q_{q_{high}}(D(\Omega))
+$$
+
+并归一化：
+
+$$
+Y = \operatorname{clip}\left(\frac{D-D_{low}}{D_{high}-D_{low}+\delta}, 0, 1\right)
+$$
+
+若非零点数不足 `min_points`，回退到固定 dB 窗口（noise-floor + dynamic-range）。
+
+### 为什么比 log1p / db_radar 更适合研究原型
+- 保留 dB 语义（优于 `log1p`）。
+- 使用非零散射分位自适应窗口（优于固定窗口 `db_radar`）。
+- 在不进入训练 loss 的前提下，提供更接近“雷达显示窗+稀疏散射可读性”的过渡接口。
+
+### 最小验证（仅重评既有模型）
+- 模型：
+  - `output/research_sc_v1_smoke20`
+  - `output/research_sc_v1_100`
+- stage_g：
+  - `output/research_sc_v1_smoke20/stage_g_obsproto_v1_iter20.json`
+  - `output/research_sc_v1_100/stage_g_obsproto_v1_iter100.json`
+  - 两组均包含 `db_cfar` 且 `finite_ok=True`。
+- stage_h：
+  - `output/research_sc_v1_smoke20_compare_obsproto_v1/stats.json`
+  - `output/research_sc_v1_100_compare_obsproto_v1/stats.json`
+  - 两组均完成导出，`db_cfar` 有效。
+
+### 结果摘录（isar, db_radar vs db_cfar）
+- 20 iter：两者均稳定；`db_cfar` 更稀疏（nonzero 降低），抑制弱背景散射底噪。
+- 100 iter：`db_cfar` 在高尾分离上更强（`q99-q95` 由 `0.0906` 提升到 `0.2490`），结构峰值分层更明显。
+
+### 本轮结论
+- 新 mode `db_cfar` 稳定、可导出、保持 post-hoc 属性。
+- 相比 `db_radar`，其自适应非零分位窗口更适合作为后续真实 ISAR observation/operator 的过渡接口。
+

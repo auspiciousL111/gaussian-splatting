@@ -1361,3 +1361,57 @@ $$
 - 该闭环显著减少了“先 RGB 再灰度”的语义绕路，使 observation/operator 的输入语义更直接。
 - 在保持主线冻结的条件下，V1 已可作为 research 分支后续真实 ISAR observation/operator 原型挂载的基础层。
 
+
+## 35. Post-hoc Observation Prototype V1: db_cfar
+
+本节新增的是观测层原型，不进入训练 loss。
+
+### 35.1 三种既有模式的局限
+
+- `identity`：保留物理原值，但弱散射细节在大动态范围下不易读。
+- `log1p`：具备压缩但缺乏雷达 dB 解释。
+- `db_radar`：有 dB 语义，但固定窗口（noise floor / dynamic range）跨样本自适应有限。
+
+### 35.2 db_cfar 的数学形式
+
+给定单通道强度 $I\ge 0$：
+
+$$
+D = 10\log_{10}(I+\epsilon)
+$$
+
+定义非零散射集合：
+
+$$
+\Omega = \{p\mid I(p) > \tau\}
+$$
+
+在 $D(\Omega)$ 上取分位锚点：
+
+$$
+D_{low}=Q_{q_{low}}(D(\Omega)),\quad D_{high}=Q_{q_{high}}(D(\Omega))
+$$
+
+归一化输出：
+
+$$
+Y = \operatorname{clip}\left(\frac{D-D_{low}}{D_{high}-D_{low}+\delta}, 0, 1\right)
+$$
+
+当 $|\Omega|$ 太小（低于 `min_points`）时，退化为固定 dB 窗口，保证数值稳定。
+
+### 35.3 语义解释
+
+- `db_cfar` 仍在 dB 域表达，保留雷达观测习惯。
+- 与 `db_radar` 的关键差异是窗口锚点来自非零散射分布，而不是固定全局常数。
+- 这使其在不同目标/迭代阶段下更像“自适应显示窗”，更利于结构阅读与后续真实算子挂载。
+
+### 35.4 本轮验证指向
+
+在既有 `20/100 iter` 模型重评中，`db_cfar` 全部 finite 且可稳定导出。
+
+- 20 iter：主要表现为抑制低能背景（更稀疏）。
+- 100 iter：高尾分层更明显（`q99-q95` 相比 `db_radar` 增大），结构可读性更强。
+
+因此，`db_cfar` 可作为 research 分支下一阶段真实 ISAR observation/operator 的过渡接口基座。
+
