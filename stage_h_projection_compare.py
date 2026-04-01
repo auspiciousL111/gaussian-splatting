@@ -11,7 +11,11 @@ from gaussian_renderer import render
 from scene import GaussianModel, Scene
 from utils.image_utils import psnr
 from utils.loss_utils import l1_loss
-from utils.isar_observation import apply_isar_observation_operator
+from utils.isar_observation import (
+    DEFAULT_ISAR_OBSERVATION_MODES,
+    apply_isar_observation_operator,
+    build_isar_observation_specs,
+)
 
 
 def to_3ch(img: torch.Tensor) -> torch.Tensor:
@@ -130,6 +134,44 @@ def resolve_background(args) -> tuple[torch.Tensor, dict]:
     return bg, info
 
 
+def parse_observation_modes(obs_modes_csv: str) -> list[str]:
+    modes = [m.strip() for m in str(obs_modes_csv).split(",") if m.strip()]
+    if not modes:
+        raise ValueError("obs_modes must include at least one mode")
+    return modes
+
+
+def build_observation_specs_from_args(args) -> list[dict]:
+    modes = parse_observation_modes(getattr(args, "obs_modes", ",".join(DEFAULT_ISAR_OBSERVATION_MODES)))
+    base_context = {
+        "range_axis": getattr(args, "obs_range_axis", None),
+        "cross_range_axis": getattr(args, "obs_cross_range_axis", None),
+        "future_physical_operator_name": getattr(args, "obs_future_physical_operator_name", None),
+    }
+    context_overrides = {mode: dict(base_context) for mode in modes}
+    if "db_radar" in context_overrides:
+        context_overrides["db_radar"].update(
+            {
+                "noise_floor_db": getattr(args, "obs_noise_floor_db", -40.0),
+                "dynamic_range_db": getattr(args, "obs_dynamic_range_db", 40.0),
+                "normalization_mode": getattr(args, "obs_normalization_mode", "db_floor_to_unit_interval"),
+                "clamp_min": getattr(args, "obs_clamp_min", 0.0),
+                "clamp_max": getattr(args, "obs_clamp_max", None),
+            }
+        )
+    return build_isar_observation_specs(modes, context_overrides)
+
+
+def to_observation_visual(image_obs: torch.Tensor, obs_mode: str, obs_context: dict) -> torch.Tensor:
+    if obs_mode == "log1p" and str(obs_context.get("normalization_mode", "none")) == "none":
+        epsilon = max(float(obs_context.get("epsilon", 0.0)), 0.0)
+        denom = float(np.log1p(1.0 + epsilon))
+        if denom <= 1e-8:
+            denom = 1.0
+        return torch.clamp(image_obs / denom, min=0.0, max=1.0)
+    return torch.clamp(image_obs, min=0.0, max=1.0)
+
+
 def main() -> None:
     parser = ArgumentParser()
     model_params = ModelParams(parser, sentinel=True)
@@ -140,6 +182,15 @@ def main() -> None:
     parser.add_argument("--output_dir", type=str, default="./output/stage_h_compare")
     parser.add_argument("--hist_bins", type=int, default=16)
     parser.add_argument("--allow_white_background_for_isar", action="store_true")
+    parser.add_argument("--obs_modes", type=str, default=",".join(DEFAULT_ISAR_OBSERVATION_MODES))
+    parser.add_argument("--obs_noise_floor_db", type=float, default=-40.0)
+    parser.add_argument("--obs_dynamic_range_db", type=float, default=40.0)
+    parser.add_argument("--obs_normalization_mode", type=str, default="db_floor_to_unit_interval")
+    parser.add_argument("--obs_clamp_min", type=float, default=0.0)
+    parser.add_argument("--obs_clamp_max", type=float, default=None)
+    parser.add_argument("--obs_range_axis", type=str, default=None)
+    parser.add_argument("--obs_cross_range_axis", type=str, default=None)
+    parser.add_argument("--obs_future_physical_operator_name", type=str, default=None)
     args = get_combined_args(parser)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -161,6 +212,7 @@ def main() -> None:
     gt_intensity = to_gray(gt)
     save_tensor_image(os.path.join(args.output_dir, "gt.png"), gt)
     save_tensor_gray_image(os.path.join(args.output_dir, "gt_intensity.png"), gt_intensity)
+    obs_specs = build_observation_specs_from_args(args)
 
     results = {
         "model_path": args.model_path,
@@ -170,6 +222,10 @@ def main() -> None:
         "camera_index": args.camera_index,
         "camera_name": cam.image_name,
         "background": bg_info,
+        "observation_interface": {
+            "version": "context_v1",
+            "specs": obs_specs,
+        },
         "gt_intensity": summarize_intensity(gt_intensity, gt_intensity, args.hist_bins),
         "modes": {},
         "modes_intensity": {},
@@ -203,19 +259,22 @@ def main() -> None:
             results["modes"][mode] = summarize(img, gt)
             results["modes_intensity"][mode] = summarize_intensity(img_intensity, gt_intensity, args.hist_bins)
             
-            # Loop over extensible observation operators
-            for obs_op in ["log1p"]: 
+            # Loop over extensible observation operators using unified context-aware specs.
+            for spec in obs_specs:
+                obs_op = spec["mode"]
+                obs_context = spec["context"]
                 if obs_op not in results["modes_intensity_obs"]:
-                    results["modes_intensity_obs"][obs_op] = {}
+                    results["modes_intensity_obs"][obs_op] = {
+                        "_mode": obs_op,
+                        "_context": obs_context,
+                    }
                     
-                img_obs = apply_isar_observation_operator(img_intensity, obs_op)
-                gt_obs = apply_isar_observation_operator(gt_intensity, obs_op)
+                img_obs = apply_isar_observation_operator(img_intensity, obs_op, obs_context)
+                gt_obs = apply_isar_observation_operator(gt_intensity, obs_op, obs_context)
                 results["modes_intensity_obs"][obs_op][mode] = summarize_intensity(img_obs, gt_obs, args.hist_bins)
-                
-                # Normalize log1p image to 0-1 roughly for visualization
-                if obs_op == "log1p":
-                    img_obs_vis = img_obs / 0.693147
-                    save_tensor_gray_image(os.path.join(args.output_dir, f"render_{mode}_intensity_{obs_op}.png"), img_obs_vis)
+
+                img_obs_vis = to_observation_visual(img_obs, obs_op, obs_context)
+                save_tensor_gray_image(os.path.join(args.output_dir, f"render_{mode}_intensity_{obs_op}.png"), img_obs_vis)
         diff = torch.abs(mode_images["perspective"] - mode_images["isar"])
         save_tensor_image(os.path.join(args.output_dir, "render_absdiff.png"), diff)
         results["perspective_vs_isar_absdiff"] = {

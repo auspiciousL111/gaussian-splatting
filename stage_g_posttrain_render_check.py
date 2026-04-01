@@ -1,4 +1,5 @@
 import os
+import json
 import traceback
 from argparse import ArgumentParser
 
@@ -7,7 +8,11 @@ import torch
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import render
 from scene import Scene, GaussianModel
-from utils.isar_observation import apply_isar_observation_operator
+from utils.isar_observation import (
+    DEFAULT_ISAR_OBSERVATION_MODES,
+    apply_isar_observation_operator,
+    build_isar_observation_specs,
+)
 
 
 def resolve_background(args) -> tuple[torch.Tensor, dict]:
@@ -39,12 +44,50 @@ def resolve_background(args) -> tuple[torch.Tensor, dict]:
     return bg, info
 
 
+def parse_observation_modes(obs_modes_csv: str) -> list[str]:
+    modes = [m.strip() for m in str(obs_modes_csv).split(",") if m.strip()]
+    if not modes:
+        raise ValueError("obs_modes must include at least one mode")
+    return modes
+
+
+def build_observation_specs_from_args(args) -> list[dict]:
+    modes = parse_observation_modes(getattr(args, "obs_modes", ",".join(DEFAULT_ISAR_OBSERVATION_MODES)))
+    base_context = {
+        "range_axis": getattr(args, "obs_range_axis", None),
+        "cross_range_axis": getattr(args, "obs_cross_range_axis", None),
+        "future_physical_operator_name": getattr(args, "obs_future_physical_operator_name", None),
+    }
+    context_overrides = {mode: dict(base_context) for mode in modes}
+    if "db_radar" in context_overrides:
+        context_overrides["db_radar"].update(
+            {
+                "noise_floor_db": getattr(args, "obs_noise_floor_db", -40.0),
+                "dynamic_range_db": getattr(args, "obs_dynamic_range_db", 40.0),
+                "normalization_mode": getattr(args, "obs_normalization_mode", "db_floor_to_unit_interval"),
+                "clamp_min": getattr(args, "obs_clamp_min", 0.0),
+                "clamp_max": getattr(args, "obs_clamp_max", None),
+            }
+        )
+    return build_isar_observation_specs(modes, context_overrides)
+
+
 def main():
     parser = ArgumentParser()
     model_params = ModelParams(parser, sentinel=True)
     pipeline_params = PipelineParams(parser)
     parser.add_argument("--load_iteration", type=int, default=20)
     parser.add_argument("--allow_white_background_for_isar", action="store_true")
+    parser.add_argument("--obs_modes", type=str, default=",".join(DEFAULT_ISAR_OBSERVATION_MODES))
+    parser.add_argument("--obs_noise_floor_db", type=float, default=-40.0)
+    parser.add_argument("--obs_dynamic_range_db", type=float, default=40.0)
+    parser.add_argument("--obs_normalization_mode", type=str, default="db_floor_to_unit_interval")
+    parser.add_argument("--obs_clamp_min", type=float, default=0.0)
+    parser.add_argument("--obs_clamp_max", type=float, default=None)
+    parser.add_argument("--obs_range_axis", type=str, default=None)
+    parser.add_argument("--obs_cross_range_axis", type=str, default=None)
+    parser.add_argument("--obs_future_physical_operator_name", type=str, default=None)
+    parser.add_argument("--output_json", type=str, default="")
 
     args = get_combined_args(parser)
 
@@ -89,10 +132,15 @@ def main():
         print(f"min={min_v:.6f}, max={max_v:.6f}, mean={mean_v:.6f}, std={std_v:.6f}")
         print(f"nonzero_ratio={nonzero_ratio:.6f}, near_white_ratio={near_white_ratio:.6f}")
 
+        obs_specs = build_observation_specs_from_args(args)
+        observation_results = {}
+
         # Extensible Observation checks
         all_obs_finite_ok = True
-        for obs_mode in ["log1p"]:
-            image_obs = apply_isar_observation_operator(image_raw, obs_mode)
+        for spec in obs_specs:
+            obs_mode = spec["mode"]
+            obs_context = spec["context"]
+            image_obs = apply_isar_observation_operator(image_raw, obs_mode, obs_context)
             obs_finite_ok = bool(torch.isfinite(image_obs).all().item())
             if not obs_finite_ok:
                 all_obs_finite_ok = False
@@ -100,9 +148,58 @@ def main():
             obs_max_v = float(image_obs.max().item())
             obs_mean_v = float(image_obs.mean().item())
             obs_std_v = float(image_obs.std().item())
+            observation_results[obs_mode] = {
+                "mode": obs_mode,
+                "context": obs_context,
+                "stats": {
+                    "finite_ok": obs_finite_ok,
+                    "shape": list(image_obs.shape),
+                    "min": obs_min_v,
+                    "max": obs_max_v,
+                    "mean": obs_mean_v,
+                    "std": obs_std_v,
+                    "nonzero_ratio": float((image_obs.abs() > 1e-6).float().mean().item()),
+                    "near_white_ratio": float((image_obs > 0.999).float().mean().item()),
+                },
+            }
             print(f"[POST-TRAIN-CHECK] OBS ({obs_mode}) metrics")
+            print(f"context={obs_context}")
             print(f"obs_finite_ok={obs_finite_ok}")
             print(f"min={obs_min_v:.6f}, max={obs_max_v:.6f}, mean={obs_mean_v:.6f}, std={obs_std_v:.6f}")
+
+        loaded_iteration = int(getattr(scene_obj, "loaded_iter", args.load_iteration))
+        export_payload = {
+            "model_path": args.model_path,
+            "source_path": args.source_path,
+            "loaded_iteration": loaded_iteration,
+            "background": bg_info,
+            "raw": {
+                "finite_ok": finite_ok,
+                "shape": list(image_raw.shape),
+                "min": min_v,
+                "max": max_v,
+                "mean": mean_v,
+                "std": std_v,
+                "nonzero_ratio": nonzero_ratio,
+                "near_white_ratio": near_white_ratio,
+            },
+            "observation_interface": {
+                "version": "context_v1",
+                "modes": [spec["mode"] for spec in obs_specs],
+            },
+            "observation_outputs": observation_results,
+        }
+
+        if args.output_json:
+            out_json = args.output_json
+        else:
+            out_json = os.path.join(args.model_path, f"stage_g_observation_context_iter{loaded_iteration}.json")
+        out_dir = os.path.dirname(out_json)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(out_json, "w", encoding="utf-8") as f:
+            json.dump(export_payload, f, indent=2)
+        print(f"[POST-TRAIN-CHECK] observation_export_json={out_json}")
 
         if finite_ok and all_obs_finite_ok and (not black_like) and (not white_like):
             print("[POST-TRAIN-CHECK] PASS")
