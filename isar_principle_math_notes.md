@@ -1415,3 +1415,42 @@ $$
 
 因此，`db_cfar` 可作为 research 分支下一阶段真实 ISAR observation/operator 的过渡接口基座。
 
+
+## 36. Observation Mode Adjudication（log1p / db_radar / db_cfar）
+
+本节给出 research 分支当前默认 observation mode 的正式判决。
+
+### 36.1 判决标准
+
+在同一模型与同一导出链路下，比较以下维度：
+
+1. 是否过曝/发白；
+2. 主体边界与背景抑制；
+3. 强弱散射层次表达；
+4. 跨 checkpoint（20/100）可读性一致性；
+5. 作为后续真实 observation/operator 过渡接口的适配性。
+
+### 36.2 结果摘要
+
+- `log1p`：
+  - 优点：稳定、低过曝、快速可读。
+  - 局限：缺少 dB 语义，层次解释偏经验。
+
+- `db_radar`：
+  - 优点：固定 dB 窗口，工程对比口径稳定。
+  - 局限：窗口固定，对样本动态范围变化自适应不足。
+
+- `db_cfar`：
+  - 优点：dB 语义 + 非零散射分位自适应窗口，背景抑制更强；
+  - 在 100 iter 下 `q99-q95` 分离显著提升，层次可读性更好；
+  - 20/100 均稳定 finite，过曝比例仍极低。
+
+### 36.3 正式推荐
+
+- research 默认 mode：`db_cfar`。
+- 辅助角色建议：
+  - `log1p` 作为快速观察/调试视图；
+  - `db_radar` 作为固定窗口工程对照口径。
+
+因此，在不引入新训练耦合的前提下，`db_cfar` 是当前更合适的 research 默认 observation 过渡接口。
+

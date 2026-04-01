@@ -1469,3 +1469,48 @@ $$
 - 新 mode `db_cfar` 稳定、可导出、保持 post-hoc 属性。
 - 相比 `db_radar`，其自适应非零分位窗口更适合作为后续真实 ISAR observation/operator 的过渡接口。
 
+
+## [2026-04-01] 阶段 25：Observation Mode 判决轮（research only）
+
+### 本轮边界
+- 仅在 `research/deopt-softplus-obsctx` 分支执行。
+- 不训练新模型，不改训练 loss，不改 CUDA，不新增第四种 mode。
+
+### 比较对象与数据
+- 比较模式：`identity / log1p / db_radar / db_cfar`（重点后三者）。
+- checkpoint：
+  - `output/research_sc_v1_smoke20`
+  - `output/research_sc_v1_100`
+- 评估框架：同一套 stage_g / stage_h 导出。
+
+### 关键对比结论
+1) 过曝/发白风险
+- `log1p` 与 `db_radar` 在两组 checkpoint 下 `near_white_ratio=0`。
+- `db_cfar` 仍保持极低过曝（20: `0.00024`, 100: `0.00075`），可接受。
+
+2) 主体边界与背景抑制
+- `db_cfar` 的 `near_black_ratio` 更高、`nonzero_ratio` 更低，背景抑制更强：
+  - 20 iter：`nonzero 0.0467 -> 0.0374`（vs db_radar）
+  - 100 iter：`nonzero 0.1421 -> 0.1137`
+- 判读：`db_cfar` 对弱背景更克制，主体边界相对更干净。
+
+3) 强弱散射层次
+- 100 iter 下高尾分层指标 `q99-q95`：
+  - `db_radar`: `0.0906`
+  - `db_cfar`: `0.2490`
+- 判读：`db_cfar` 在成熟 checkpoint 上更能拉开强弱散射层次。
+
+4) 跨 checkpoint 可读性一致性
+- 三个研究模式（`log1p / db_radar / db_cfar`）在 20/100 均 finite 且稳定导出。
+- `db_cfar` 在 20/100 均保持“低过曝 + 更强背景抑制”的一致趋势。
+
+### 正式判决（research 默认口径）
+- 默认推荐 mode：`db_cfar`。
+- 角色分工：
+  - `log1p`：快速查看与轻量 debug 的通用压缩视图。
+  - `db_radar`：固定窗口工程对比基线（便于跨实验固定口径）。
+  - `db_cfar`：research 默认过渡接口（面向后续真实 observation/operator 挂载）。
+
+### 本轮结论
+- 当前 research 分支后续默认 observation mode 应设置为 `db_cfar`。
+
