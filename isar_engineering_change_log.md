@@ -1343,3 +1343,99 @@ aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \d
 - 当前正式训练主线回正为：`math-1 + candidate-A`。
 - `deopt + softplus`（current/candidate）保留为研究分支，不作为训练主线。
 
+
+## [2026-04-02] 阶段 23：A@8000 后期退化最小调度修正验证（research only）
+
+### 本轮目标
+- 在不改几何/math/CUDA/viewer 的前提下，仅改一个调度点，验证 A@8000 碎裂/黑线是否可缓解。
+- 仅当“明显更稳且无副作用”才允许研究分支提交。
+
+### 本轮边界（严格未触碰）
+- 不改 forward/backward 数学。
+- 不改 CUDA 子模块。
+- 不改 renderer。
+- 不改 stage_g / stage_h 脚本实现。
+- 不改 supervision 参数口径（保持 candidate-A）。
+
+### 修改文件清单
+- train.py
+
+### 每个文件改了什么
+- train.py
+  - 将 opacity reset 触发条件由“周期触发”改为“单次触发”。
+  - 改前：`iteration % opt.opacity_reset_interval == 0`
+  - 改后：`iteration == opt.opacity_reset_interval`
+
+### 训练与评估执行
+- 续训起点：`output/mainline_a36_a4000_20260401/chkpnt4000.pth`
+- 修正版输出：`output/research_a36_a8000_opreset_once_20260402`
+- 修正版评估：
+  - `output/research_a36_a8000_opreset_once_compare_train0/stats.json`
+  - `output/research_a36_a8000_opreset_once_20260402/train/ours_8000/renders`
+
+### 对比结果（modes_intensity.isar，修正版 - 原始 A@8000）
+- 对比对象：`output/mainline_a36_a8000_compare_train0/stats.json`
+- `l1_vs_gt`: `-0.002514`（改善）
+- `psnr_vs_gt`: `+0.265445 dB`（改善）
+- `nonzero_ratio`: `-0.049131`（有效散射覆盖下降）
+- `q99`: `+0.116032`（高亮强度上冲）
+- `near_black_ratio`: `+0.056122`（黑场占比上升）
+- `near_white_ratio`: `+0.004910`（白饱和显著上升）
+
+### 稳定性与可运行性
+- 训练完成，无 NaN / Inf / 崩溃。
+- stage_g：PASS（finite），但 near_white_ratio 上升。
+- stage_h：finite_ok=True。
+- render.py：train 视角渲染 36/36 成功。
+
+### 本轮判定
+- 该最小调度改动未满足“明显更稳且无副作用”的提交门槛。
+- 结论：保留为 research only 观察结果，不进入主线冻结结论，不执行提交/推送。
+
+### 下一步建议
+- 若继续在调度侧排查，建议优先测试“降低 reset 频次但非一次性”与“reset 时机后移且与 densify 解耦”的小步实验。
+
+
+## [2026-04-02] 阶段 24：late densify/prune 冻结验证（research only, not mainline）
+
+### 本轮目标
+- 在保持 opacity reset 原始逻辑的前提下，只隔离“4000 之后继续 densify/prune 是否是后期退化主因”。
+
+### 本轮边界（严格未触碰）
+- 不改几何 math。
+- 不改 CUDA。
+- 不改 renderer。
+- 不改 observation/operator。
+- 不引入第二个 schedule 改动。
+
+### 修改文件清单
+- arguments/__init__.py
+
+### 每个文件改了什么
+- arguments/__init__.py
+  - 调整优化默认参数：`densify_until_iter` 从 `15000` 收口到 `4000`。
+  - `opacity_reset_interval` 与 reset 触发逻辑保持原始 baseline（周期触发）。
+
+### 训练与评估执行
+- 续训起点：`output/mainline_a36_a4000_20260401/chkpnt4000.pth`
+- 修正版输出：`output/research_a36_a8000_freeze_densify_after4000_20260402`
+- stage_h 对比输出：`output/research_a36_a8000_freeze_densify_after4000_compare_train0/stats.json`
+
+### 与原始 A@8000 对比（modes_intensity.isar）
+- 对比对象：`output/mainline_a36_a8000_compare_train0/stats.json`
+- `l1_vs_gt`: `-0.003908`（改善）
+- `psnr_vs_gt`: `+1.003192 dB`（明显改善）
+- `near_black_ratio`: `-0.027185`（黑场下降）
+- `near_white_ratio`: `-0.000214`（回到 0）
+- 视觉：碎裂/黑线/黑块明显缓解，但条纹伪影仍有残留。
+
+### 稳定性
+- A@8000 训练完成，无 NaN / Inf / 崩溃。
+- stage_g：PASS。
+- stage_h：finite_ok=True。
+- render.py：正常输出（train 渲染完成）。
+
+### 本轮结论
+- 在当前研究分支语境下，“freeze densify after 4000”可作为下一阶段默认 schedule 基座。
+- 标记：research only，not mainline。
+

@@ -1315,3 +1315,72 @@ $$
 - 正式训练主线：`math-1 + candidate-A`。
 - 研究分支：`deopt + softplus`（current/candidate）继续用于观测层与表示层研究，不作为正式训练主线。
 
+
+## 34. A@8000 后期退化的最小调度修正实验（opacity reset 单次化）
+
+本节记录的是训练调度实验，不涉及几何模型、投影公式或 CUDA 数学改动。
+
+### 34.1 实验动机
+
+在 36 视角 candidate-A 长训中，A@8000 相比 A@5000 出现后期退化迹象。只读审查后，优先嫌疑集中在 opacity reset 与 densify/prune 的耦合时序。
+
+### 34.2 最小改动定义
+
+仅改动 `train.py` 中 reset 触发条件：
+
+- 原：每 `opacity_reset_interval` 周期触发。
+- 新：仅在 `iteration == opacity_reset_interval` 时触发一次。
+
+其余训练口径保持不变：
+
+- `isar_supervision_mode=a`
+- `isar_l1_weight_alpha=1.0`
+- `isar_l1_weight_gamma=2.0`
+
+### 34.3 结果解读（修正版 vs 原始 A@8000）
+
+基于 `modes_intensity.isar`：
+
+- $\Delta L1=-0.002514$，$\Delta PSNR=+0.265445\,\text{dB}$，表面像素误差有改善。
+- 但 $\Delta nonzero=-0.049131$，说明有效回波覆盖下降。
+- 同时 $\Delta q99=+0.116032$、$\Delta near\_white=+0.004910$，伴随亮部上冲与饱和风险。
+- $\Delta near\_black=+0.056122$，黑场占比上升，与结构断裂/空洞趋势一致。
+
+因此该改动属于“误差指标局部改善，但结构分布恶化”的不均衡改良，不满足“明显更稳且无副作用”。
+
+### 34.4 当前数学层结论
+
+- 本实验不构成几何或投影数学新结论。
+- 可以确认：仅靠“opacity reset 单次化”不足以稳定 A@8000 后期形态。
+- 该结果应归档为调度层负例证据，用于约束后续实验搜索空间。
+
+
+## 35. late densify/prune 冻结验证结论（research only, not mainline）
+
+### 35.1 实验定义
+
+在保持 opacity reset 原始周期触发不变的条件下，仅收口 densify/prune 有效窗口：
+
+$$
+	ext{densify\_until\_iter}: 15000 \rightarrow 4000
+$$
+
+并执行 A@4000 $\rightarrow$ A@8000 的同口径续训对比。
+
+### 35.2 结果要点
+
+相对原始 A@8000（`modes_intensity.isar`）：
+
+- $\Delta L1=-0.003908$
+- $\Delta PSNR=+1.003192\,\text{dB}$
+- $\Delta near\_black=-0.027185$
+- $\Delta near\_white=-0.000214$（回到 0）
+
+同时视觉上碎裂/黑线/黑块显著缓解，说明“4000 后持续 densify/prune”比 opacity reset 更接近主因。
+
+### 35.3 当前可用结论
+
+- 该结论属于训练调度层，不改变几何或投影数学结论。
+- 在研究分支范围内，可将“freeze densify after 4000”作为下一阶段默认 schedule 基座。
+- 标记：research only，not mainline。
+
