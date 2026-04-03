@@ -1384,3 +1384,74 @@ $$
 - 在研究分支范围内，可将“freeze densify after 4000”作为下一阶段默认 schedule 基座。
 - 标记：research only，not mainline。
 
+
+## 36. 多 elevation 监督平衡（research only）
+
+本节只讨论监督侧权重，不涉及几何、reader、CUDA 或投影数学改写。
+
+### 36.1 逐帧动态 balance（已验证，不作为默认）
+
+定义当前视图 GT 亮度均值 $m_t$ 与 EMA $e_t$：
+
+$$
+e_t = 0.99 e_{t-1} + 0.01 m_t
+$$
+
+逐帧权重：
+
+$$
+w_t = \mathrm{clamp}\left(\sqrt{\frac{e_t}{m_t + \varepsilon}},\ 0.5,\ 2.0\right)
+$$
+
+总损失外层加权：
+
+$$
+L_t' = w_t \cdot L_t
+$$
+
+结论：可强化 0° 纬线，但会带来整体亮度/体量不稳，未选为默认。
+
+### 36.2 按 elevation 静态 balance（当前候选基座的一部分）
+
+按训练集统计每条纬线 GT 均值 $\mu_e$，整体均值 $\mu_{all}$：
+
+$$
+w_e^{raw} = \sqrt{\frac{\mu_{all}}{\mu_e + \varepsilon}}
+$$
+
+执行 clamp（当前实现边界 $[0.67, 1.5]$）与均值归一化后，得到固定权重 $\tilde{w}_e$，训练时仅按当前视图所属 elevation 乘外层标量：
+
+$$
+L_t' = \tilde{w}_{e(t)} \cdot L_t
+$$
+
+在数据集 `isar_Hubble1_front90_3elev30_20260403` 的一组实际权重示例：
+
+$$
+	ilde{w}_{-18.303} \approx 0.8105,\quad
+	ilde{w}_{0.0} \approx 1.4018,\quad
+	ilde{w}_{+18.303} \approx 0.7877
+$$
+
+### 36.3 组合候选：a2g2 + static elevation balance
+
+在 candidate-A 像素内权重保持不变的前提下，组合策略为：
+
+1. 像素内仍用
+
+$$
+w_{px} = 1 + \alpha I_{gt}^{\gamma},\quad (\alpha,\gamma)=(2,2)
+$$
+
+2. 视图外层再乘固定纬线权重 $\tilde{w}_{e(t)}$。
+
+该组合在当前四方案中表现为更均衡折中：
+- 保持较好误差/PSNR。
+- 比单独 static elevation balance 明显减轻偏黑副作用。
+
+### 36.4 当前数学层结论
+
+- 当前最优候选仍属于监督侧改造，不触及几何或投影主方程。
+- 结论边界：`a2g2 + static elevation balance` 可作为多 elevation 当前默认监督候选继续推进（research only）。
+- 下一阶段优先在监督侧做轻量微调，不进入 math2。
+

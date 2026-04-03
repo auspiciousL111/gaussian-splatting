@@ -100,6 +100,8 @@ class OptimizationParams(ParamGroup):
         self.isar_supervision_mode = "mainline"
         self.isar_l1_weight_alpha = 1.0
         self.isar_l1_weight_gamma = 2.0
+        self.isar_view_balance_enable = False
+        self.isar_elevation_balance_enable = False
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

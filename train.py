@@ -10,6 +10,7 @@
 #
 
 import os
+import csv
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim
@@ -46,6 +47,85 @@ def isar_candidate_a_l1_loss(image, gt_image, alpha, gamma, eps=1e-8):
     weights = 1.0 + float(alpha) * torch.pow(gt_positive, float(gamma))
     return torch.sum(weights * torch.abs(image - gt_image)) / (torch.sum(weights) + eps)
 
+
+def compute_isar_view_balance_weight(gt_image, ema_gt_mean, eps=1e-6):
+    with torch.no_grad():
+        gt_mean = torch.clamp(gt_image.mean(), min=eps)
+        if ema_gt_mean is None:
+            ema_gt_mean = gt_mean
+        else:
+            ema_gt_mean = 0.99 * ema_gt_mean + 0.01 * gt_mean
+
+        # Inverse-sqrt form keeps adjustment mild: darker views get >1 weight.
+        raw_weight = torch.sqrt(ema_gt_mean / gt_mean)
+        weight = torch.clamp(raw_weight, 0.5, 2.0)
+    return weight.detach(), ema_gt_mean.detach()
+
+
+def build_isar_elevation_static_balance(scene, dataset, clamp_min=0.67, clamp_max=1.5, eps=1e-6):
+    poses_csv = os.path.join(dataset.source_path, "poses.csv")
+    if not os.path.exists(poses_csv):
+        print("[ISAR-ELEV-BAL] poses.csv not found, static elevation balance disabled for this run.")
+        return {}, {}
+
+    image_to_elev = {}
+    with open(poses_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            image_to_elev[row["image_name"]] = round(float(row["elevation_deg"]), 10)
+
+    sum_by_elev = {}
+    cnt_by_elev = {}
+    total_sum = 0.0
+    total_cnt = 0
+
+    for cam in scene.getTrainCameras():
+        elev = image_to_elev.get(cam.image_name)
+        if elev is None:
+            continue
+        gt_mean = float(torch.clamp(cam.original_image.mean(), min=eps).item())
+        sum_by_elev[elev] = sum_by_elev.get(elev, 0.0) + gt_mean
+        cnt_by_elev[elev] = cnt_by_elev.get(elev, 0) + 1
+        total_sum += gt_mean
+        total_cnt += 1
+
+    if total_cnt == 0:
+        print("[ISAR-ELEV-BAL] no matched train cameras from poses.csv, static elevation balance disabled.")
+        return {}, {}
+
+    global_mean = total_sum / float(total_cnt)
+    raw_weight_by_elev = {}
+    for elev, mean_sum in sum_by_elev.items():
+        elev_mean = mean_sum / float(cnt_by_elev[elev])
+        raw_weight_by_elev[elev] = (global_mean / max(elev_mean, eps)) ** 0.5
+
+    clipped_weight_by_elev = {}
+    for elev, w in raw_weight_by_elev.items():
+        clipped_weight_by_elev[elev] = min(max(w, float(clamp_min)), float(clamp_max))
+
+    clipped_avg = 0.0
+    for elev, w in clipped_weight_by_elev.items():
+        clipped_avg += w * float(cnt_by_elev[elev])
+    clipped_avg /= float(total_cnt)
+
+    final_weight_by_elev = {}
+    for elev, w in clipped_weight_by_elev.items():
+        normalized_w = w / max(clipped_avg, eps)
+        final_weight_by_elev[elev] = min(max(normalized_w, float(clamp_min)), float(clamp_max))
+
+    image_weight_map = {}
+    for image_name, elev in image_to_elev.items():
+        image_weight_map[image_name] = final_weight_by_elev.get(elev, 1.0)
+
+    print("[ISAR-ELEV-BAL] enabled with static per-elevation weights:")
+    for elev in sorted(final_weight_by_elev):
+        elev_mean = sum_by_elev[elev] / float(cnt_by_elev[elev])
+        print(
+            f"  elev={elev:.10f} | gt_mean={elev_mean:.6f} | count={cnt_by_elev[elev]} | weight={final_weight_by_elev[elev]:.6f}"
+        )
+
+    return image_weight_map, final_weight_by_elev
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -71,6 +151,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
+    isar_view_balance_ema = None
+    isar_elev_weight_by_image = {}
+    isar_elev_weight_by_value = {}
+    if getattr(opt, "isar_elevation_balance_enable", False):
+        isar_elev_weight_by_image, isar_elev_weight_by_value = build_isar_elevation_static_balance(scene, dataset)
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
@@ -147,6 +232,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ssim_value = ssim(image, gt_image)
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+
+        if getattr(opt, "isar_view_balance_enable", False):
+            view_balance_weight, isar_view_balance_ema = compute_isar_view_balance_weight(
+                gt_image, isar_view_balance_ema
+            )
+            loss = loss * view_balance_weight
+
+        if getattr(opt, "isar_elevation_balance_enable", False):
+            elev_balance_weight = float(isar_elev_weight_by_image.get(viewpoint_cam.image_name, 1.0))
+            loss = loss * elev_balance_weight
 
         # Depth regularization
         Ll1depth_pure = 0.0

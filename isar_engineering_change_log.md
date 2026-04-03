@@ -1439,3 +1439,51 @@ aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \d
 - 在当前研究分支语境下，“freeze densify after 4000”可作为下一阶段默认 schedule 基座。
 - 标记：research only，not mainline。
 
+
+## [2026-04-03] 阶段 25：multielev 默认监督候选固化（research only, not mainline）
+
+### 本轮目标
+- 在不改几何/reader/CUDA/viewer 的边界下，对多 elevation 数据监督策略做最小验证收敛，选出当前默认候选。
+
+### 修改文件清单
+- arguments/__init__.py
+- train.py
+- isar_engineering_change_log.md
+- isar_principle_math_notes.md
+
+### 每个文件改了什么
+- arguments/__init__.py
+  - 新增 `isar_view_balance_enable`（默认 False）。
+  - 新增 `isar_elevation_balance_enable`（默认 False）。
+- train.py
+  - 新增逐帧动态 loss balance（GT mean + EMA + inverse-sqrt，带 clamp）。
+  - 新增按 elevation 静态 loss balance（离线统计三条纬线 GT mean，固定权重，带 clamp 与均值归一）。
+  - 两类 balance 都以显式开关接入；默认逻辑不变。
+
+### 数据与训练口径
+- 数据集：`D:/3DGS_new/3DGS_DATA/isar_Hubble1_front90_3elev30_20260403`
+- 固定主协议：`isar_supervision_mode=a`
+- 对比对象：
+  - baseline（a1g2）
+  - a2g2
+  - per-view balance（a1g2 + view balance）
+  - static elevation balance（a1g2 + elev balance）
+  - a2g2 + static elevation balance
+- 所有对比均执行 A@4000 + stage_g + stage_h + render，并进行了真实 viewer 启动检查。
+
+### 关键结果（A@4000 聚合，train renders）
+- baseline：`l1=0.05235`, `psnr=16.78095`, `near_black=0.79524`
+- a2g2：`l1=0.05862`, `psnr=15.82129`, `near_black=0.78540`
+- static elev：`l1=0.05131`, `psnr=17.38461`, `near_black=0.80790`
+- a2g2 + static：`l1=0.05133`, `psnr=17.32835`, `near_black=0.78737`
+
+### 本轮结论
+- 单独 `a2g2`：对偏黑有缓解，但整体质量不稳。
+- 单独 static elev：0° 修复明显，但整体偏黑副作用偏强。
+- 组合 `a2g2 + static elev`：在四者中给出更均衡折中，既保留较好误差/PSNR，又显著压回 static 方案的偏黑副作用。
+- 结论标记：`multielev default supervision candidate = a2g2 + static elevation balance`（research only, not mainline）。
+
+### 仍然是研究候选/未晋升主线的部分
+- 尚未做长训闭环（A@8000+）与更长时间稳定性确认。
+- 仍需在监督侧做轻量微调，暂不进入几何/math2。
+
