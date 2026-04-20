@@ -1487,3 +1487,85 @@ aw\ linear L1 metric, it consistently outperforms Mainline in the logarithmic \d
 - 尚未做长训闭环（A@8000+）与更长时间稳定性确认。
 - 仍需在监督侧做轻量微调，暂不进入几何/math2。
 
+
+
+
+## [2026-04-06] 阶段 26：multielev 阶段结论收敛（只保留有效结论）
+
+### 26.1 已确认有效结论
+- 前侧 `0°-90°` 是当前多视角采样里相对稳定的 azimuth 工作区间。
+- 单 elevation 数据不足以支撑“可展示”的自由视角三维结构恢复。
+- 三条 elevation（`-18.3° / 0° / +18.3°`）是当前阶段的最小可行多纬线方案。
+- 当前默认监督基座保持为 `a2g2 + static elevation balance`（research only）。
+
+### 26.2 已明确否定方向（结论 + 核心原因）
+- clamp 放宽（clampfix）：不能直接推广为正向修复；核心原因是会放大纬线间收益差异，导致整体重建质量回退。
+- backward 正交标度单点修正：不成立；核心原因是短程训练与对照验证未形成整体指标收益。
+- up 正交化单独修正：不成立；核心原因是单点改动未解决主问题链条，收益不稳定且不可复用。
+- per-view / per-elevation 手工权重：仅保留诊断价值；核心原因是强依赖当前数据分布，缺乏科研普适性。
+
+### 26.3 当前主问题（主线）
+> 当前主问题已从“黑化/亮度问题”转移为 **per-elevation fidelity imbalance（不同纬线结构还原能力不均衡）**。
+
+> 更底层机制为：**边界命中 -> 可见性统计 -> densify 触发 -> 高斯体量演化** 的链条，在不同 elevation 上存在系统性偏置。
+
+### 26.4 当前阶段位置
+- 当前处于“机制审计阶段”，不是参数调优阶段。
+- 下一步聚焦 `densify / 可见性 / 边界耦合` 的深审计，不扩展新参数试验。
+
+
+## [2026-04-18] 阶段 27：shared z-depth 试验线收口（负样本归档）
+
+### 27.1 本轮目标
+- 关闭 shared z-depth 第一轮试验线，不再继续扩展该支线改动。
+- 回滚 `visibility` / `invdepth` 试验线相关代码，恢复干净等权 baseline。
+- 仅做最小确认（编译 + smoke），不执行新训练实验。
+
+### 27.2 前序审计为何选择 visibility / invdepth 作为 first-cut
+- 审计阶段曾判断：`边界命中 -> 可见性统计 -> densify` 链路可能存在视锥判定不一致风险，因此优先做 `visibility` 统一试验。
+- 审计阶段曾判断：`invdepth=1/t_z` 在不同投影分支上的梯度语义可能混叠，因此优先做 `invdepth` 最小修正试验。
+
+### 27.3 真实实验结果（A@4000）
+- `visibility + invdepth` 相对干净等权 baseline：
+  - 全局 `L1` 变差（`+0.002059`）
+  - 全局 `PSNR` 变差（`-0.3943 dB`）
+  - `SSIM` 小幅提升（`+0.00918`）
+  - 结论：不适合作为默认方案
+- `visibility-only` 相对 baseline：
+  - 全局 `L1` 变差（`+0.001632`）
+  - 全局 `PSNR` 变差（`-0.3453 dB`）
+  - `SSIM` 提升（`+0.0100`）
+  - 主指标仍退化，未达默认保留标准
+- `visibility-only` 相对 `visibility + invdepth`：
+  - 略好（`L1 -0.000428`, `PSNR +0.0490 dB`, `SSIM +0.00084`）
+  - 说明在该组合内 `invdepth` 更应优先回滚
+
+### 27.4 本轮代码收口动作（仅限该试验线）
+- 已回滚：
+  - `markVisible/checkFrustum` 的 projection-aware visibility 统一接口扩展
+  - 为 invdepth 试验临时引入的 `forward/backward render` 额外 `projection_mode` 传参与绑定扩展
+- 明确未改：
+  - `sort key by t_z`
+  - `depth = t_z`
+  - `near clip (t_z > 0.2)`
+  - `mean/cov` 主链
+  - `loss / 权重`
+  - `reader / 几何`
+
+### 27.5 最小确认结果（baseline 回归）
+- 扩展重编译：成功。
+- `smoke_test_isar_scene.py`：PASS。
+- `stage_g1_perspective_diagnose.py`：`diagnosis=mostly_consistent`。
+- `smoke_test_isar_forward_only.py`（orthographic/isar）：PASS，`finite_ok=True`。
+- 本轮无 NaN / Inf / 崩溃。
+
+### 27.6 Codex 审计 txt 的定位
+- 文件 `这一轮最开始的backward审计结果（codex 5.4）.md` 保留为理论背景与立项依据。
+- 本轮之后不再作为 shared z-depth 自动推进依据；后续若重启该方向，必须以新实验结果重新立项。
+
+### 27.7 收口结论
+- `invdepth` 不进入默认方案。
+- `visibility` 也不进入默认方案。
+- shared z-depth 第一轮记为负样本支线并正式关闭。
+- 默认研究主线恢复为干净等权 baseline。
+

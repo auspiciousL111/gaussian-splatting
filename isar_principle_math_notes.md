@@ -1154,31 +1154,28 @@ $$ \operatorname{softplus}(\ln(e^S - 1)) = \ln(1 + e^{\ln(e^S - 1)}) = \ln(1 + e
 
 
 
-## 30. Observation Operator Decoupling Principle
-Following the confirmed structural failure of blending HDR suppressions (like \log1p\) directly inside the training iteration gradient loops (see 29.1 and 29.2), the system explicitly segments pply_isar_observation_operator to run post-hoc.
-The observation transformations are strictly decoupled interfaces applied solely during eval/export steps against strictly RAW-trained geometry. This theoretically preserves Gaussian topological propagation gradients while retaining evaluation layer comparability (modes_intensity_obs) toward future ISAR physics integrations.
+## 30. 观测算子解耦原则 (Observation Operator Decoupling Principle)
+在确认了将 HDR 抑制（如 log1p）直接混入训练迭代梯度循环会导致结构性失效（参见 29.1 和 29.2）后，系统明确将 apply_isar_observation_operator 分离为**后期处理（post-hoc）**运行。观测变换被严格定义为解耦接口，仅在评估/导出阶段应用于严格基于 RAW（原始数据） 训练的几何体。从理论上讲，这既保留了高斯拓扑传播梯度，又保持了评估层（modes_intensity_obs）的可比性，便于未来与 ISAR 物理特性集成。
 
 
-### 31. Post-Hoc Prototype: Minimal ISAR Decibel Scaling (\db_radar\)
+### 31.后验原型：极简 ISAR 分贝缩放 (db_radar)
 
-In order to provide a 'more realistic' evaluation schema outside the training loop, the db_radar operator was initiated. radar signals are primarily evaluated in the Decibel (dB) scale because they encompass enormous dynamic ranges. A basic threshold and dB mapping mimics the physical radar receiver's minimum detectable bounds and normalization:
-- **Mathematical Form**: {dB} = 10 \cdot \log_{10}(I + 10^{-4})$
-- **Envelope Normalization**: {norm} = \text{clamp}((I_{dB} + 40.0) / 40.0, \text{min}=0.0)$
-- **Why it is more realistic than log1p**: log1p(I) mathematically merges a linear regime (for small \I\) and a compressed regime (for large \I\). However, radar inherently treats ratio-based energy tracking through pure  \log_{10}()$ mapping across all bounds. This new prototype explicitly anchors a -40dB noise floor assumption and aligns pixel intensity exclusively as a relative power distribution. It acts strictly as a downstream evaluation rendering method without dragging network geometry out of convergence.
+为了在训练循环外提供一个“更真实”的评估模式，系统引入了 db_radar 算子。由于雷达信号涵盖极大的动态范围，其评估主要在分贝 (dB) 尺度下进行。这种基础的阈值与 dB 映射模拟了物理雷达接收机的最小检测限和归一化过程：数学形式： 
+
+$dB = 10 \cdot \log_{10}(I + 10^{-4})$
+
+包络归一化： $norm = \text{clamp}((I_{dB} + 40.0) / 40.0, \text{min}=0.0)$
+
+为什么它比 log1p 更真实： log1p(I) 在数学上合并了线性区间（针对小 $I$ 值）和压缩区间（针对大 $I$ 值）。然而，雷达本质上是在所有边界内通过纯 $\log_{10}()$ 映射进行基于比率的能量跟踪。这一新原型明确锚定了 -40dB 的噪声底限假设，并将像素强度排他性地对齐为相对功率分布。它严格作为下游评估的渲染方法，而不会导致网络几何体偏离收敛轨道。
 
 
 
-### The DB_RADAR Performance Inversion and Softplus Regularization
-During the formal Mainline vs. Candidate branch comparison, an interesting metric inversion occurred. The candidate model (implementing \softplus\ and explicit DC scalar bounds) achieved slightly worse L1 metrics in the linear \
-aw\ domain compared to the mainline model, but consistently generated significantly better L1 and PSNR metrics in the \db_radar\ domain.
+### DB_RADAR 性能反转与 Softplus 正则化
+在正式的主线 (Mainline) 与候选 (Candidate) 分支对比中，出现了一个有趣的指标反转。相比主线模型，候选模型（实现了 softplus 和明确的 DC 标量边界）在线性 RAW 领域的 L1 指标略差，但在 db_radar 领域却持续产生显著优于前者的 L1 和 PSNR 指标。数学原理解析：线性 RAW L1 指标对绝对误差采用均匀权重。因此，那些容易过拟合并在极端明亮散射峰值处趋于饱和的模型（在使用简单的 exp() 激活时经常发生）在 RAW 误差指标上会获得虚高的好成绩，但却牺牲了低强度场的动态范围。然而，物理算子
 
-**Mathematical Rationale:**
-The linear \
-aw\ L1 metric applies uniform weighting to absolute error. Therefore, models that easily overfit and saturate to extreme bright scattering peaks (which often happens with simple \exp()\ activation) artificially score better in \
-aw\ error metrics but sacrifice dynamic range in low-intensity fields.
-
-However, the physical \db_radar = (10 * log10(I + 1e-4) + 40) / 40\ operation applies a violent logarithmic compression. This means a numerical error near the noise floor (^{-4}$) is amplified massively compared to an error near peak values ($-0\text{dB}$). 
-Because the Candidate branch utilizes de-optical initialization and \softplus\, it avoids catastrophic gradient explosion and strictly enforces stable, non-negative noise floors. This allows the model to accurately reconstruct the weak structural scatterers, leading to a direct quantitative victory in the DB_RADAR domain. This proves that softplus and explicit scalar modeling physically align far better with inverse SAR rendering properties.
+ $db\_radar = (10 \cdot \log_{10}(I + 1e-4) + 40) / 40$ 
+ 
+ 执行了剧烈的对数压缩。这意味着，相比于峰值（$0\text{dB}$）附近的误差，噪声底限（$10^{-4}$）附近的数值误差会被大幅放大。由于候选分支利用了去光学初始化和 softplus，它避免了灾难性的梯度爆炸，并严格执行了稳定、非负的噪声底限。这使得模型能够准确重建微弱的结构性散射体，从而在 DB_RADAR 领域取得了直接的量化优势。这证明了 softplus 和显式标量建模在物理特性上远比传统的渲染方式更符合逆合成孔径雷达（ISAR）的渲染属性。
 
 
 ## 32. Observation Context Interface 语义化（context_v1）
@@ -1454,4 +1451,74 @@ $$
 - 当前最优候选仍属于监督侧改造，不触及几何或投影主方程。
 - 结论边界：`a2g2 + static elevation balance` 可作为多 elevation 当前默认监督候选继续推进（research only）。
 - 下一阶段优先在监督侧做轻量微调，不进入 math2。
+
+
+## 37. multi-elevation 阶段性机制结论收敛（只保留有效结论）
+
+### 37.1 已确认有效结论（机制相关边界）
+- 前侧 `0°-90°` 可作为当前多视角采样的稳定 azimuth 工作区间。
+- 单 elevation 在本阶段不足以支撑自由视角三维结构恢复。
+- 三条 elevation（`-18.3° / 0° / +18.3°`）是当前最小可行多纬线方案。
+- 当前监督基座维持 `a2g2 + static elevation balance`（research only）。
+
+### 37.2 已否定路径（结论 + 原因）
+- clamp 放宽（clampfix）：结论为不可直接保留；原因是会放大纬线不均衡，整体误差口径回退。
+- backward 正交标度单点修正：结论为不成立；原因是未带来稳定且可复现的整体收益。
+- up 正交化单独修正：结论为不成立；原因是单点修正未覆盖主问题链条，效果不稳。
+- per-view / per-elevation 手工权重：结论为仅诊断用途；原因是依赖样本分布、缺乏跨场景普适性。
+
+### 37.3 当前主问题与底层机制
+> 当前主问题已从“黑化/亮度问题”转移为 **per-elevation fidelity imbalance（不同纬线结构还原能力不均衡）**。
+
+> 更底层机制为：**边界命中 -> 可见性统计 -> densify 触发 -> 高斯体量演化** 的链条，在不同 elevation 上存在系统性偏置。
+
+### 37.4 当前阶段位置
+- 当前属于机制审计阶段，而非参数调优阶段。
+- 下一步应优先进入 `densify / 可见性 / 边界耦合` 深审计。
+
+
+## 38. shared z-depth 第一轮试验线收口（负样本）
+
+### 38.1 试验对象与立项依据
+shared z-depth 第一轮 first-cut 仅针对两点：
+- `visibility` 统一（使 `markVisible/checkFrustum` 与 preprocess 侧视锥口径一致）
+- `invdepth` 最小修正（限制非透视分支的 invdepth 贡献）
+
+其立项依据来自审计阶段的两条假设：
+- H1：可见性口径不一致可能通过 `visible -> densify` 统计耦合放大跨 elevation 偏置。      
+- H2：`invdepth=1/t_z` 在非透视分支的梯度语义可能引入不期望耦合。
+
+### 38.2 实验事实优先于审计建议
+基于 A@4000 的真实对比结果：
+- `visibility + invdepth` vs baseline：
+  - $\Delta L1=+0.002059$
+  - $\Delta PSNR=-0.3943\,\mathrm{dB}$
+  - $\Delta SSIM=+0.00918$
+  - 主指标退化，不能作为默认方案
+- `visibility-only` vs baseline：
+  - $\Delta L1=+0.001632$
+  - $\Delta PSNR=-0.3453\,\mathrm{dB}$
+  - $\Delta SSIM=+0.0100$
+  - 主指标仍退化，不满足默认保留标准
+- `visibility-only` vs `visibility + invdepth`：
+  - $\Delta L1=-0.000428$
+  - $\Delta PSNR=+0.0490\,\mathrm{dB}$
+  - $\Delta SSIM=+0.00084$
+  - 仅说明组合中 `invdepth` 更应优先回滚，不构成 `visibility` 可默认保留的证据
+
+### 38.3 当前数学层结论
+- H1/H2 在本轮 first-cut 上未形成可推广正收益。
+- 结论顺序：
+  - `invdepth` 不保留
+  - `visibility` 也不进入默认方案
+- 因此 shared z-depth 第一轮试验线记为负样本，不进入默认主线。
+
+### 38.4 对 Codex 审计 txt 的定位
+- `这一轮最开始的backward审计结果（codex 5.4）.md` 保留为理论背景材料。
+- 该材料用于解释“为何尝试过 visibility/invdepth”，不作为后续自动推进 shared z-depth 修改的依据。
+- 后续若重启 shared z-depth 方向，必须以新的实验结果重新立项。
+
+### 38.5 主线状态
+- 默认研究主线恢复为干净等权 baseline。
+- 本轮收口后，不再沿 shared z-depth 第一轮方案继续扩展。
 
